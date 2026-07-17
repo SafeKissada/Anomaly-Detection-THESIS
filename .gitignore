@@ -1,0 +1,11 @@
+# ซ่อน Virtual Environment
+.venv/
+__pycache__/
+*.pyc
+
+# ซ่อนโฟลเดอร์เก็บข้อมูลและผลลัพธ์ (เพราะเราเซฟลง Google Drive หรือ Local)
+data_dataset/
+outputs/
+*.pt
+*.pth
+.DS_Store
