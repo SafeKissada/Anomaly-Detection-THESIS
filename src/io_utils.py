@@ -47,8 +47,9 @@ def checkpoint_path(cfg, name: str = BEST_CKPT_FILE) -> str:
 
 def save_history(history: Dict, cfg) -> str:
   path = history_path(cfg)
+  serializable = {k: [float(v) for v in vals] for k, vals in history.items()}
   with open(path, 'w') as f:
-    json.dump(history, f, indent=2)
+    json.dump(serializable, f, indent=2)
   return path
 
 
