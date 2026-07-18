@@ -133,9 +133,9 @@ def main():
     print('\nจำนวนภาพต่อ split × ผลทาย (ถูก/ผิด):')
     print(df_gallery.groupby(['split', 'correct']).size().unstack(fill_value=0))
 
-    _ = browse_gallery(df_gallery, split_arrays, split='train', correct=False, n=100)
-    _ = browse_gallery(df_gallery, split_arrays, split='test',  correct=False, n=100)
-    _ = browse_gallery(df_gallery, split_arrays, split='val',   correct=False, n=100)
+    _ = browse_gallery(df_gallery, split_arrays, CFG, split='train', correct=False, n=100)
+    _ = browse_gallery(df_gallery, split_arrays, CFG, split='test',  correct=False, n=100)
+    _ = browse_gallery(df_gallery, split_arrays, CFG, split='val',   correct=False, n=100)
 
     logger.info('All plots/heatmaps rendered.')
 

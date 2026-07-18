@@ -290,6 +290,7 @@ def visualize_heatmaps(
 def browse_gallery(
     df_gallery  : pd.DataFrame,
     split_arrays: Dict[str, Dict],
+    cfg        = None,
     query      : str  = None,
     split      : str  = None,
     label      : str  = None,
@@ -360,5 +361,12 @@ def browse_gallery(
 
     plt.subplots_adjust(hspace=0.6, wspace=0.08)
     plt.tight_layout()
+    if cfg is not None:
+        name_parts = [p for p in [split, label, pred_label] if p]
+        if correct is not None:
+            name_parts.append('correct' if correct else 'incorrect')
+        out = f"{cfg.OUTPUT_PATH}/gallery_{'_'.join(name_parts) or 'all'}.png"
+        plt.savefig(out, dpi=150, bbox_inches='tight')
+        print(f'Gallery saved → {out}')
     plt.show()
     return df
