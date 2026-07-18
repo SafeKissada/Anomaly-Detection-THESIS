@@ -9,12 +9,12 @@ import torch
 
 @dataclass
 class Config:
-  TRAIN_DIR       : str = "/content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3/train_anomaly3"
-  VAL_DIR         : str = "/content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3/val_anomaly3"
-  TEST_DIR        : str = "/content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3/test_anomaly3"
+  TRAIN_DIR       : str = "train dataset path"
+  VAL_DIR         : str = "validation dataset path"
+  TEST_DIR        : str = "test dataset path"
 
-  SAVE_PATH   : str = '/content/drive/MyDrive/Thesis/EXPERIMENT/EXPERIMENT4(ConvNeXt_Autoencoder)/SAVED/ConvNeXt_AE_3_1(Top-K)'
-  OUTPUT_PATH : str = '/content/drive/MyDrive/Thesis/EXPERIMENT/EXPERIMENT4(ConvNeXt_Autoencoder)/OUTPUT/ConvNeXt_AE_3_1(Top-K)'
+  SAVE_PATH   : str = 'save path(log)'
+  OUTPUT_PATH : str = 'resual path(visual)'
   VALID_EXT       : Tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp')
 
 
@@ -54,8 +54,6 @@ class Config:
   SCORE_TOPK_PERCENT    : float = 10.0
   AE_MONITOR            : str   = 'val_auroc'
   USE_AUGMENTATION      : bool  = True
-  AUG_ROTATION_DEG      : float = 10.0
-  AUG_TRANSLATE         : float = 0.05
   AUG_COLOR_JITTER      : float = 0.20
 
   def __post_init__(self):

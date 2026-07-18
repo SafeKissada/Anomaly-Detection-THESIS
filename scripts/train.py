@@ -28,11 +28,6 @@ logging.basicConfig(
     ])
 logger = logging.getLogger('ConvNeXtAutoencoder')
 
-try:
-    from google.colab import drive
-    in_colab = True
-except ImportError:
-    in_colab = False
 
 import numpy as np
 import pandas as pd
@@ -44,8 +39,8 @@ from rich.panel import Panel
 from config.config import Config, set_seed
 from src.data.dataset import (AnomalyDataset, scan_directory, build_transforms,
                               make_loader)
-from src.models.backbone import ConvNeXtExtractor
-from src.models.autoencoder import FeatureAutoencoder
+from src.model.backbone_baseline import ConvNeXtExtractor
+from src.model.autoencoder import FeatureAutoencoder
 from src.engine import train_autoencoder, score_dataset_split
 from src.evaluate import (compute_metrics, select_percentile_threshold,
                           oracle_threshold_diagnostic)
@@ -69,11 +64,6 @@ def make_pred_df(paths, labels, scores, metrics):
 def main():
     logger.info(f'Logging to {_log_file}')
 
-    if in_colab:
-        drive.mount('/content/drive')
-        print('Drive mounted...')
-    else:
-        print('Local environment - Drive mount skipped...')
 
     # ── PHASE 1 — Setup & configuration ──────────────────────────────────────
     CFG = Config()

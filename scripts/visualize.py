@@ -25,7 +25,7 @@ from rich.panel import Panel
 from config.config import Config
 from src.evaluate import compute_metrics
 from src import io_utils
-from src.visualize import (plot_class_distribution, plot_training_history,
+from src.visual import (plot_class_distribution, plot_training_history,
                            plot_roc_curves, plot_pr_curves,
                            plot_confusion_matrices, plot_score_distributions,
                            visualize_heatmaps, browse_gallery)
