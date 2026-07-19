@@ -18,6 +18,14 @@ from torchvision.transforms import v2
 logger = logging.getLogger("ConvNeXtAutoencoder")
 
 
+def to_grayscale(img: Image.Image) -> Image.Image:
+    """Convert an RGB PIL image to grayscale (no equalization), replicated
+    back into 3 channels (RGB) so it stays compatible with a pretrained
+    3-channel backbone."""
+    gray = img.convert("L")             # [H, W] single channel
+    return gray.convert("RGB")          # replicate L -> R=G=B
+
+
 def grayscale_equalize(img: Image.Image) -> Image.Image:
     """Convert an RGB PIL image to grayscale then apply histogram equalization.
 
@@ -29,6 +37,20 @@ def grayscale_equalize(img: Image.Image) -> Image.Image:
     equalized = cv2.equalizeHist(gray)          # [H, W] uint8, contrast-stretched
     equalized_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
     return Image.fromarray(equalized_rgb)
+
+
+class Grayscale:
+    """torchvision-style transform wrapper around `to_grayscale` (no equalization).
+
+    Insert into a `v2.Compose([...])` pipeline (operates on PIL images,
+    so place it BEFORE `v2.ToImage()` / `v2.ToDtype()` / `v2.Normalize()`).
+    """
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        return to_grayscale(img)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}()"
 
 
 class GrayscaleEqualize:
@@ -132,18 +154,26 @@ def build_transforms(cfg):
     """Build the ImageNet-normalized transform (with/without augmentation),
     and the plain 'display' transform used for visualisation.
 
-    If cfg.USE_GRAYSCALE_EQUALIZATION is True, images are converted to
-    grayscale + histogram-equalized (then replicated to 3 channels) right
-    before entering the model pipeline (ToImage/ToDtype/Normalize). The
-    `display_tf` used for the "original image" gallery is left untouched so
-    users can still see the true original photo, not the pre-processed one.
+    Color mode is controlled by cfg.USE_GRAYSCALE / cfg.USE_GRAYSCALE_EQUALIZATION
+    (see config.py for the 3 supported combinations: RGB / Grayscale /
+    Grayscale+Equalization). The color-mode step is applied only to the
+    model-input pipelines (imagenet_tf / train_aug_tf); `display_tf` used
+    for the "original image" gallery is left untouched so users can still
+    see the true original photo regardless of the selected mode.
     """
-    use_gray_eq = getattr(cfg, 'USE_GRAYSCALE_EQUALIZATION', False)
-    gray_eq_step = [GrayscaleEqualize()] if use_gray_eq else []
+    color_mode = getattr(cfg, 'COLOR_MODE', 'rgb')
+    if color_mode == 'grayscale_equalized':
+        color_step = [GrayscaleEqualize()]
+    elif color_mode == 'grayscale':
+        color_step = [Grayscale()]
+    elif color_mode == 'rgb':
+        color_step = []
+    else:
+        raise ValueError(f"Unknown cfg.COLOR_MODE: {color_mode!r}")
 
     imagenet_tf = v2.Compose([
         v2.Resize(cfg.IMAGE_SIZE),
-        *gray_eq_step,
+        *color_step,
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),
         v2.Normalize(mean=[0.485, 0.456, 0.406],
@@ -153,7 +183,7 @@ def build_transforms(cfg):
     train_aug_tf = v2.Compose([
         v2.Resize(cfg.IMAGE_SIZE),
         v2.ColorJitter(brightness=cfg.AUG_COLOR_JITTER, contrast=cfg.AUG_COLOR_JITTER),
-        *gray_eq_step,
+        *color_step,
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),
         v2.Normalize(mean=[0.485, 0.456, 0.406],

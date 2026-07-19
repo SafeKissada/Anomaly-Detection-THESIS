@@ -74,7 +74,8 @@ def main():
         f'Backbone   : [bold cyan]ConvNeXt-{CFG.BACKBONE.capitalize()}[/bold cyan]\n'
         f'AE Epochs  : [bold cyan]{CFG.AE_EPOCHS}[/bold cyan]\n'
         f'LR         : [bold cyan]{CFG.AE_LR}[/bold cyan]\n'
-        f'Bottleneck : [bold cyan]{CFG.AE_BOTTLENECK_CH} ch[/bold cyan]',
+        f'Bottleneck : [bold cyan]{CFG.AE_BOTTLENECK_CH} ch[/bold cyan]\n'
+        f'Color mode : [bold cyan]{CFG.COLOR_MODE}[/bold cyan]',
         title='[bold]Config Loaded[/bold]'
     ))
 
