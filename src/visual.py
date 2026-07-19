@@ -222,15 +222,22 @@ def visualize_heatmaps(
     split_name: str,
     cfg,
     n_samples : int = 8,
-    seed      : int = 42
+    seed      : int = 42,
+    image_kind: str = 'rgb',   # 'rgb' | 'preproc' — which base image is being shown
 ) -> None:
     """
-    แสดง Original | Reconstruction Error Map | Heatmap Overlay ต่อภาพ พร้อม
+    แสดง [Base Image] | Reconstruction Error Map | Heatmap Overlay ต่อภาพ พร้อม
     ระบุชัดเจนต่อภาพว่า:
       - GT   (Ground Truth) : label จริงของภาพ (normal / anomaly)
       - Pred (Prediction)   : โมเดลทำนายว่าอะไร (จาก score เทียบกับ threshold)
       - ผลถูก/ผิด          : กรอบสีเขียว = ทำนายถูก, กรอบสีแดง = ทำนายผิด
+
+    image_kind='rgb'     -> base image = ภาพจริง (RGB, ก่อนผ่าน preprocessing)
+    image_kind='preproc' -> base image = ภาพที่ผ่าน preprocessing จริง (grayscale
+                             หรือ grayscale+equalized) ที่ป้อนเข้าโมเดล
     """
+    assert image_kind in ('rgb', 'preproc'), "image_kind must be 'rgb' or 'preproc'"
+
     rng = np.random.default_rng(seed)
     y = np.array([1 if l=='anomaly' else 0 for l in labels])
     idx_n = np.where(y==0)[0]; idx_a = np.where(y==1)[0]
@@ -243,7 +250,8 @@ def visualize_heatmaps(
     fig, axes = plt.subplots(n_rows, 3, figsize=(13, 4.6*n_rows))
     if n_rows == 1: axes = axes[np.newaxis, :]
 
-    for col_title, ax in zip(['Original Image','Reconstruction Error Map','Heatmap Overlay'],
+    base_col_title = 'Original Image (RGB)' if image_kind == 'rgb' else 'Preprocessed Image (Model Input)'
+    for col_title, ax in zip([base_col_title, 'Reconstruction Error Map', 'Heatmap Overlay'],
                               axes[0]):
         ax.set_title(col_title, fontsize=10, fontweight='bold', pad=45)
 
@@ -275,21 +283,26 @@ def visualize_heatmaps(
                 sp.set_edgecolor(clr); sp.set_linewidth(2.5)
             ax.set_xticks([]); ax.set_yticks([])
 
+    kind_label = 'RGB' if image_kind == 'rgb' else 'Preprocessed'
     plt.suptitle(
-        f'Heatmap Visualisation — {split_name} | ConvNeXt-{cfg.BACKBONE.capitalize()} AE',
+        f'Heatmap Visualisation ({kind_label}) — {split_name} | ConvNeXt-{cfg.BACKBONE.capitalize()} AE',
         fontsize=13, fontweight='bold', y=1.005
     )
     plt.subplots_adjust(hspace=0.55, wspace=0.08)
     plt.tight_layout()
-    out = f'{cfg.OUTPUT_PATH}/heatmaps_{split_name.lower()}.png'
+    suffix = '' if image_kind == 'rgb' else f'_{image_kind}'
+    out = f'{cfg.OUTPUT_PATH}/heatmaps_{split_name.lower()}{suffix}.png'
     plt.savefig(out, dpi=150, bbox_inches='tight')
     plt.show()
     print(f'Heatmaps saved → {out}')
 
 
 def _get_display_image(split_arrays: Dict[str, Dict], split: str, idx: int, mode: str) -> np.ndarray:
-    """mode='original' -> raw image as-is.
-    mode='processed'  -> raw image after image processing (heatmap overlay)."""
+    """mode='original'        -> real RGB photo, untouched.
+    mode='processed'       -> real RGB photo + heatmap overlay.
+    mode='preproc'         -> the actual preprocessed image fed to the model
+                              (grayscale / grayscale+equalized), no overlay.
+    mode='preproc_overlay' -> preprocessed image + heatmap overlay."""
     arrs = split_arrays[split]
     orig = arrs['imgs'][idx]
     if mode == 'original':
@@ -297,15 +310,31 @@ def _get_display_image(split_arrays: Dict[str, Dict], split: str, idx: int, mode
     elif mode == 'processed':
         heat = arrs['hmaps'][idx]
         return overlay_heatmap(orig, heat, alpha=0.5)
+    elif mode == 'preproc':
+        return arrs['preproc_imgs'][idx]
+    elif mode == 'preproc_overlay':
+        heat = arrs['hmaps'][idx]
+        preproc_img = arrs['preproc_imgs'][idx]
+        return overlay_heatmap(preproc_img, heat, alpha=0.5)
     else:
-        raise ValueError(f"mode must be 'original' or 'processed', got {mode!r}")
+        raise ValueError(
+            "mode must be one of 'original', 'processed', 'preproc', "
+            f"'preproc_overlay'; got {mode!r}")
+
+
+_GALLERY_MODE_TITLES = {
+    'original'        : 'Original Images (RGB)',
+    'processed'       : 'Processed Images — Heatmap Overlay on RGB',
+    'preproc'         : 'Preprocessed Input Images (model input)',
+    'preproc_overlay' : 'Preprocessed Input + Heatmap Overlay',
+}
 
 
 def render_image_gallery(
     df_gallery  : pd.DataFrame,
     split_arrays: Dict[str, Dict],
     cfg,
-    mode        : str  = 'original',   # 'original' | 'processed'
+    mode        : str  = 'original',   # 'original' | 'processed' | 'preproc' | 'preproc_overlay'
     query       : str  = None,
     split       : str  = None,
     label       : str  = None,
@@ -315,12 +344,20 @@ def render_image_gallery(
     ncols       : int  = 5,
     random_state: int  = 42,
 ) -> pd.DataFrame:
-    """Contact-sheet style gallery showing ONE kind of image per cell
-    (either the untouched original photo, or the image after processing —
-    i.e. heatmap overlay). Each thumbnail is captioned with filename,
-    ground-truth, prediction, and score; border colour = green(correct)/red(wrong)."""
-    assert mode in ('original', 'processed'), \
-        "mode must be 'original' or 'processed'"
+    """Contact-sheet style gallery showing ONE kind of image per cell.
+    Each thumbnail is captioned with filename, ground-truth, prediction,
+    and score; border colour = green(correct)/red(wrong).
+
+    mode options:
+      'original'        : the untouched RGB photo
+      'processed'       : RGB photo + heatmap overlay
+      'preproc'         : the actual image fed to the model (grayscale /
+                          grayscale+equalized) — only meaningful when
+                          cfg.COLOR_MODE != 'rgb'
+      'preproc_overlay' : preprocessed image + heatmap overlay
+    """
+    assert mode in _GALLERY_MODE_TITLES, \
+        f"mode must be one of {list(_GALLERY_MODE_TITLES)}"
 
     df = df_gallery.copy()
     if split is not None:
@@ -355,7 +392,7 @@ def render_image_gallery(
         r, c = divmod(i, ncols)
         ax = axes[r, c]
         img = _get_display_image(split_arrays, row['split'], row['idx_in_split'], mode)
-        ax.imshow(img, cmap=None if mode == 'processed' else None)
+        ax.imshow(img)
 
         ok  = row['correct']
         clr = '#1B5E20' if ok else '#B71C1C'
@@ -369,10 +406,7 @@ def render_image_gallery(
         for sp in ax.spines.values():
             sp.set_visible(True); sp.set_edgecolor(clr); sp.set_linewidth(2.2)
 
-    # หมายเหตุ: ใช้ชื่อภาษาอังกฤษบนกราฟ เพราะฟอนต์ default ของ matplotlib ส่วนใหญ่
-    # ไม่มี glyph ภาษาไทย (จะขึ้น warning/กล่องสี่เหลี่ยมแทนตัวอักษร)
-    mode_title = 'Original Images' if mode == 'original' \
-        else 'Processed Images (Heatmap Overlay)'
+    mode_title = _GALLERY_MODE_TITLES[mode]
     backbone_name = getattr(cfg, 'BACKBONE', 'tiny')
     plt.suptitle(f'{mode_title}\nConvNeXt-{backbone_name.capitalize()} AE Gallery',
                  fontsize=13, fontweight='bold', y=1.02)
@@ -390,13 +424,26 @@ def render_image_gallery(
 
 
 def gallery_original_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
-    """Gallery แบบที่ 1: แสดงเฉพาะภาพจริง (ก่อนผ่าน image processing)."""
+    """Gallery แบบที่ 1: แสดงเฉพาะภาพจริง (RGB, ก่อนผ่าน preprocessing ใด ๆ)."""
     return render_image_gallery(df_gallery, split_arrays, cfg, mode='original', **kwargs)
 
 
 def gallery_processed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
-    """Gallery แบบที่ 2: แสดงภาพหลังผ่าน image processing (heatmap overlay)."""
+    """Gallery แบบที่ 2: แสดงภาพ RGB จริง + heatmap overlay."""
     return render_image_gallery(df_gallery, split_arrays, cfg, mode='processed', **kwargs)
+
+
+def gallery_preprocessed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
+    """Gallery: แสดงภาพที่ผ่าน preprocessing จริง ๆ ที่ป้อนเข้าโมเดล
+    (grayscale หรือ grayscale+equalization) โดยไม่มี heatmap overlay.
+    มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'rgb'."""
+    return render_image_gallery(df_gallery, split_arrays, cfg, mode='preproc', **kwargs)
+
+
+def gallery_preprocessed_overlay_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
+    """Gallery: แสดงภาพที่ผ่าน preprocessing (grayscale/equalized) + heatmap overlay.
+    มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'rgb'."""
+    return render_image_gallery(df_gallery, split_arrays, cfg, mode='preproc_overlay', **kwargs)
 
 
 def browse_gallery(

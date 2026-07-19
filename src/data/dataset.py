@@ -118,14 +118,26 @@ def scan_directory(directory: str, cfg) -> pd.DataFrame:
 
 
 class AnomalyDataset(Dataset):
-    """Returns (normalized_tensor, display_tensor, path, label, (orig_w, orig_h))."""
+    """Returns (normalized_tensor, display_tensor, preproc_display_tensor,
+    path, label, (orig_w, orig_h)).
 
-    def __init__(self, df: pd.DataFrame, norm_tf, orig_tf, image_size=(224, 224)):
+    - normalized_tensor      : model input (ImageNet-normalized, color-mode applied)
+    - display_tensor         : always the plain RGB image (0..1, no normalize) —
+                               used to show the "real photo" regardless of color mode
+    - preproc_display_tensor : the actual preprocessed image fed to the model
+                               (grayscale / grayscale+equalized), 0..1, no normalize,
+                               used for visual comparison. If no color-mode transform
+                               is configured (RGB mode), this equals display_tensor.
+    """
+
+    def __init__(self, df: pd.DataFrame, norm_tf, orig_tf, image_size=(224, 224),
+                 preproc_tf=None):
         self.paths = df["path"].tolist()
         self.labels = df["label"].tolist()
 
         self.norm_tf = norm_tf
         self.orig_tf = orig_tf
+        self.preproc_tf = preproc_tf
         self.image_size = image_size
 
     def __len__(self):
@@ -141,8 +153,9 @@ class AnomalyDataset(Dataset):
                 ow, oh = img.size
                 norm_t = self.norm_tf(img)
                 orig_t = self.orig_tf(img)
+                preproc_t = self.preproc_tf(img) if self.preproc_tf is not None else orig_t
 
-            return norm_t, orig_t, path, label, (ow, oh)
+            return norm_t, orig_t, preproc_t, path, label, (ow, oh)
 
         except Exception as e:
             logger.error(f"Load failed {path}: {e}")
@@ -196,7 +209,19 @@ def build_transforms(cfg):
         v2.ToDtype(torch.float32, scale=True),
     ])
 
-    return imagenet_tf, train_aug_tf, display_tf
+    if color_step:
+        # Same color-mode transform as the model input, but WITHOUT ImageNet
+        # normalization — kept in plain 0..1 range for visual display.
+        preproc_display_tf = v2.Compose([
+            v2.Resize(cfg.IMAGE_SIZE),
+            *color_step,
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+        ])
+    else:
+        preproc_display_tf = None  # RGB mode: nothing extra to preview
+
+    return imagenet_tf, train_aug_tf, display_tf, preproc_display_tf
 
 
 def make_loader(ds, cfg, shuffle: bool = False) -> DataLoader:
@@ -217,11 +242,11 @@ def build_datasets_and_loaders(cfg):
     df_val = scan_directory(cfg.VAL_DIR, cfg)
     df_test = scan_directory(cfg.TEST_DIR, cfg)
 
-    imagenet_tf, train_aug_tf, display_tf = build_transforms(cfg)
+    imagenet_tf, train_aug_tf, display_tf, preproc_display_tf = build_transforms(cfg)
 
-    train_ds = AnomalyDataset(df_train, imagenet_tf, display_tf, cfg.IMAGE_SIZE)
-    val_ds = AnomalyDataset(df_val, imagenet_tf, display_tf, cfg.IMAGE_SIZE)
-    test_ds = AnomalyDataset(df_test, imagenet_tf, display_tf, cfg.IMAGE_SIZE)
+    train_ds = AnomalyDataset(df_train, imagenet_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
+    val_ds = AnomalyDataset(df_val, imagenet_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
+    test_ds = AnomalyDataset(df_test, imagenet_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
 
     train_loader = make_loader(train_ds, cfg, shuffle=True)
     val_loader = make_loader(val_ds, cfg)
@@ -229,7 +254,7 @@ def build_datasets_and_loaders(cfg):
 
     df_train_normal = df_train[df_train["label"] == "normal"].reset_index(drop=True)
     normal_norm_tf = train_aug_tf if cfg.USE_AUGMENTATION else imagenet_tf
-    normal_ds = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, cfg.IMAGE_SIZE)
+    normal_ds = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
     normal_loader = make_loader(normal_ds, cfg, shuffle=True)
 
     return {

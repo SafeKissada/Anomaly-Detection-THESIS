@@ -87,11 +87,11 @@ def main():
         console.print(f'[{name:5}] total={len(df):,}  {df["label"].value_counts().to_dict()}')
 
     # ── Datasets & DataLoaders ────────────────────────────────────────────────
-    imagenet_tf, train_aug_tf, display_tf = build_transforms(CFG)
+    imagenet_tf, train_aug_tf, display_tf, preproc_display_tf = build_transforms(CFG)
 
-    train_ds = AnomalyDataset(df_train, imagenet_tf, display_tf, CFG.IMAGE_SIZE)
-    val_ds   = AnomalyDataset(df_val,   imagenet_tf, display_tf, CFG.IMAGE_SIZE)
-    test_ds  = AnomalyDataset(df_test,  imagenet_tf, display_tf, CFG.IMAGE_SIZE)
+    train_ds = AnomalyDataset(df_train, imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
+    val_ds   = AnomalyDataset(df_val,   imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
+    test_ds  = AnomalyDataset(df_test,  imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
 
     train_loader = make_loader(train_ds, CFG, shuffle=True)
     val_loader   = make_loader(val_ds,   CFG)
@@ -99,7 +99,7 @@ def main():
 
     df_train_normal = df_train[df_train['label']=='normal'].reset_index(drop=True)
     normal_norm_tf = train_aug_tf if CFG.USE_AUGMENTATION else imagenet_tf
-    normal_ds      = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, CFG.IMAGE_SIZE)
+    normal_ds      = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
     normal_loader  = make_loader(normal_ds, CFG, shuffle=True)
 
     print(f'Train : {len(train_ds):,}  |  Normal-only : {len(normal_ds):,}  '
@@ -148,15 +148,15 @@ def main():
     # ── PHASE 5 — Anomaly scoring ─────────────────────────────────────────────
     print('=== Scoring all splits ===')
     (train_scores, train_y, train_paths, train_labels,
-     train_hmaps,  train_imgs) = score_dataset_split(
+     train_hmaps,  train_imgs, train_preproc_imgs) = score_dataset_split(
         train_loader, extractor, ae, CFG, desc='Score-Train')
 
     (val_scores, val_y, val_paths, val_labels,
-     val_hmaps,  val_imgs) = score_dataset_split(
+     val_hmaps,  val_imgs, val_preproc_imgs) = score_dataset_split(
         val_loader, extractor, ae, CFG, desc='Score-Val  ')
 
     (test_scores, test_y, test_paths, test_labels,
-     test_hmaps,  test_imgs) = score_dataset_split(
+     test_hmaps,  test_imgs, test_preproc_imgs) = score_dataset_split(
         test_loader, extractor, ae, CFG, desc='Score-Test ')
 
     threshold = select_percentile_threshold(val_scores, val_y, CFG)
@@ -188,11 +188,11 @@ def main():
 
     # ── PHASE 8 — Save artifacts & final summary ──────────────────────────────
     io_utils.save_scores('train', train_scores, train_y, train_paths, train_labels,
-                         train_hmaps, train_imgs, CFG)
+                         train_hmaps, train_imgs, CFG, preproc_imgs=train_preproc_imgs)
     io_utils.save_scores('val', val_scores, val_y, val_paths, val_labels,
-                         val_hmaps, val_imgs, CFG)
+                         val_hmaps, val_imgs, CFG, preproc_imgs=val_preproc_imgs)
     io_utils.save_scores('test', test_scores, test_y, test_paths, test_labels,
-                         test_hmaps, test_imgs, CFG)
+                         test_hmaps, test_imgs, CFG, preproc_imgs=test_preproc_imgs)
     io_utils.save_threshold(threshold, CFG.THRESHOLD_PERCENTILE,
                             oracle_threshold, oracle_f1, CFG)
 

@@ -95,7 +95,7 @@ def train_autoencoder(
       ae.train()
       train_loss = 0.0
 
-      for norm_t, _, _, _, _ in normal_loader:
+      for norm_t, _, _, _, _, _ in normal_loader:
         norm_t = norm_t.to(cfg.DEVICE)
         with torch.no_grad():
           feats = extractor(norm_t)
@@ -120,7 +120,7 @@ def train_autoencoder(
       all_val_targets = []
 
       with torch.no_grad():
-        for norm_t, _, _, batch_labels, _ in val_loader:
+        for norm_t, _, _, _, batch_labels, _ in val_loader:
           norm_t = norm_t.to(cfg.DEVICE)
           feats  = extractor(norm_t)
           feats  = extractor.normalize(feats)
@@ -227,17 +227,17 @@ def score_dataset_split(
     ae         : nn.Module,
     cfg,
     desc       : str = 'Scoring'
-    ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[np.ndarray], List[np.ndarray]]:
+    ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
 
   extractor.eval()
   ae.eval()
 
   criterion = get_criterion(cfg)
 
-  img_score, y_true, paths, labels, heatmaps, orig_imgs = [], [], [], [], [], []
+  img_score, y_true, paths, labels, heatmaps, orig_imgs, preproc_imgs = [], [], [], [], [], [], []
 
   with torch.no_grad():
-    for norm_t, orig_t, batch_paths, batch_labels, _ in tqdm(loader, desc=desc):
+    for norm_t, orig_t, preproc_t, batch_paths, batch_labels, _ in tqdm(loader, desc=desc):
 
       inputs_device = norm_t.to(cfg.DEVICE)
       feats_device  = extractor(inputs_device)
@@ -260,7 +260,8 @@ def score_dataset_split(
         labels.append(batch_labels[i])
         heatmaps.append(normalized_map)
         orig_imgs.append(orig_t[i].permute(1, 2, 0).numpy())
+        preproc_imgs.append(preproc_t[i].permute(1, 2, 0).numpy())
 
   return (np.array(img_score, dtype=np.float32),
         np.array(y_true, dtype=int),
-        paths, labels, heatmaps, orig_imgs)
+        paths, labels, heatmaps, orig_imgs, preproc_imgs)

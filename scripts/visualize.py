@@ -29,7 +29,8 @@ from src.visual import (plot_class_distribution, plot_training_history,
                            plot_roc_curves, plot_pr_curves,
                            plot_confusion_matrices, plot_score_distributions,
                            visualize_heatmaps, browse_gallery,
-                           gallery_original_images, gallery_processed_images)
+                           gallery_original_images, gallery_processed_images,
+                           gallery_preprocessed_images, gallery_preprocessed_overlay_images)
 
 console = Console()
 
@@ -59,7 +60,8 @@ def main():
         f'Threshold    : [cyan]{threshold:.6f}[/cyan]  '
         f'({thr_info["percentile"]:.0f}th pct of val normal)\n'
         f'Oracle (diag): [cyan]{thr_info["oracle_threshold"]:.6f}[/cyan]  '
-        f'(F1={thr_info["oracle_f1"]:.4f})',
+        f'(F1={thr_info["oracle_f1"]:.4f})\n'
+        f'Color mode   : [cyan]{CFG.COLOR_MODE}[/cyan]',
         title='[bold]Artifacts Loaded — rendering plots[/bold]'
     ))
 
@@ -91,16 +93,25 @@ def main():
     plot_score_distributions(split_meta, threshold, CFG)
 
     # ── Heatmaps per split ────────────────────────────────────────────────────
+    # แบบที่ 1: base image = RGB จริง (แสดงเสมอ)
+    # แบบที่ 2: base image = ภาพหลัง preprocessing จริง (grayscale/equalized) —
+    #           แสดงเพิ่มเฉพาะเมื่อ COLOR_MODE ไม่ใช่ RGB
     for split, split_name in [('train','Train'), ('val','Validation'), ('test','Test')]:
         d = data[split]
         visualize_heatmaps(
             d['paths'], d['orig_imgs'], d['heatmaps'], d['labels'],
-            d['scores'], threshold, split_name, CFG, n_samples=20)
+            d['scores'], threshold, split_name, CFG, n_samples=20, image_kind='rgb')
+
+        if CFG.COLOR_MODE != 'rgb':
+            visualize_heatmaps(
+                d['paths'], d['preproc_imgs'], d['heatmaps'], d['labels'],
+                d['scores'], threshold, split_name, CFG, n_samples=20, image_kind='preproc')
 
     # ── Result gallery ────────────────────────────────────────────────────────
     split_arrays = {
         split: dict(paths=d['paths'], labels=d['labels'], scores=d['scores'],
                     hmaps=d['heatmaps'], imgs=d['orig_imgs'],
+                    preproc_imgs=d['preproc_imgs'],
                     gt=metrics[split]['gt'], pred=metrics[split]['pred'])
         for split, d in data.items()
     }
@@ -139,8 +150,8 @@ def main():
     _ = browse_gallery(df_gallery, split_arrays, CFG, split='test',  correct=False, n=100)
     _ = browse_gallery(df_gallery, split_arrays, CFG, split='val',   correct=False, n=100)
 
-    # ── Output gallery แบบที่ 1: ภาพจริง (original) ────────────────────────
-    # ── Output gallery แบบที่ 2: ภาพหลัง image processing (heatmap overlay) ─
+    # ── Output gallery แบบที่ 1: ภาพจริง (RGB, always) ──────────────────────
+    # ── Output gallery แบบที่ 2: ภาพหลัง image processing (heatmap overlay on RGB) ─
     for split_name in ['train', 'val', 'test']:
         _ = gallery_original_images(
             df_gallery, split_arrays, CFG,
@@ -148,6 +159,20 @@ def main():
         _ = gallery_processed_images(
             df_gallery, split_arrays, CFG,
             split=split_name, n=20, ncols=5)
+
+    # ── ถ้า color mode ไม่ใช่ RGB (grayscale / grayscale+equalization) ─────────
+    # เพิ่ม gallery อีก 2 แบบที่แสดงภาพซึ่งผ่าน preprocessing จริงที่ป้อนเข้าโมเดล:
+    #   - gallery_preprocessed_images         : ภาพ preprocessed ล้วน ๆ (ไม่มี overlay)
+    #   - gallery_preprocessed_overlay_images : ภาพ preprocessed + heatmap overlay
+    if CFG.COLOR_MODE != 'rgb':
+        print(f"\nCOLOR_MODE = '{CFG.COLOR_MODE}' → เพิ่ม gallery เวอร์ชัน preprocessed ด้วย")
+        for split_name in ['train', 'val', 'test']:
+            _ = gallery_preprocessed_images(
+                df_gallery, split_arrays, CFG,
+                split=split_name, n=20, ncols=5)
+            _ = gallery_preprocessed_overlay_images(
+                df_gallery, split_arrays, CFG,
+                split=split_name, n=20, ncols=5)
 
     logger.info('All plots/heatmaps rendered.')
 

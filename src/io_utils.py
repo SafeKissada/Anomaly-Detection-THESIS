@@ -88,16 +88,21 @@ def load_norm_stats_into(extractor, cfg, map_location='cpu') -> None:
 def save_scores(split: str, scores: np.ndarray, y_true: np.ndarray,
                 paths: List[str], labels: List[str],
                 heatmaps: List[np.ndarray], orig_imgs: List[np.ndarray],
-                cfg) -> str:
+                cfg, preproc_imgs: List[np.ndarray] = None) -> str:
   path = scores_path(split, cfg)
+  # preproc_imgs may be omitted for backward compatibility; default to orig_imgs
+  # (this is also what happens naturally in RGB mode, where they're identical).
+  if preproc_imgs is None:
+    preproc_imgs = orig_imgs
   np.savez_compressed(
       path,
-      scores    = np.asarray(scores, dtype=np.float32),
-      y_true    = np.asarray(y_true, dtype=int),
-      paths     = np.array(paths),
-      labels    = np.array(labels),
-      heatmaps  = np.stack(heatmaps).astype(np.float32),
-      orig_imgs = np.stack(orig_imgs).astype(np.float32),
+      scores       = np.asarray(scores, dtype=np.float32),
+      y_true       = np.asarray(y_true, dtype=int),
+      paths        = np.array(paths),
+      labels       = np.array(labels),
+      heatmaps     = np.stack(heatmaps).astype(np.float32),
+      orig_imgs    = np.stack(orig_imgs).astype(np.float32),
+      preproc_imgs = np.stack(preproc_imgs).astype(np.float32),
   )
   return path
 
@@ -105,12 +110,16 @@ def save_scores(split: str, scores: np.ndarray, y_true: np.ndarray,
 def load_scores(split: str, cfg) -> Dict:
   with np.load(scores_path(split, cfg)) as data:
     return {
-        'scores'    : data['scores'],
-        'y_true'    : data['y_true'],
-        'paths'     : [str(p) for p in data['paths']],
-        'labels'    : [str(l) for l in data['labels']],
-        'heatmaps'  : list(data['heatmaps']),
-        'orig_imgs' : list(data['orig_imgs']),
+        'scores'      : data['scores'],
+        'y_true'      : data['y_true'],
+        'paths'       : [str(p) for p in data['paths']],
+        'labels'      : [str(l) for l in data['labels']],
+        'heatmaps'    : list(data['heatmaps']),
+        'orig_imgs'   : list(data['orig_imgs']),
+        # 'preproc_imgs' may be missing in .npz files saved before this field
+        # was added — fall back to orig_imgs (equivalent to RGB mode).
+        'preproc_imgs': list(data['preproc_imgs']) if 'preproc_imgs' in data
+                        else list(data['orig_imgs']),
     }
 
 
