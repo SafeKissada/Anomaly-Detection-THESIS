@@ -66,7 +66,7 @@ class ConvNeXtExtractor(nn.Module):
     sum_   = torch.zeros(self.out_channels, device=device)
     sumsq  = torch.zeros(self.out_channels, device=device)
     n_pix  = 0
-    for bi, (norm_t, _, _, _, _) in enumerate(loader):
+    for bi, (norm_t, _, _, _, _, _) in enumerate(loader):
       if max_batches is not None and bi >= max_batches:
         break
       feat = self.forward(norm_t.to(device))            # [B, C, H, W]
