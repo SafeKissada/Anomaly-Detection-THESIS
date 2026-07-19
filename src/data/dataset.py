@@ -7,6 +7,8 @@ import random
 from pathlib import Path
 from typing import Optional
 
+import cv2
+import numpy as np
 import pandas as pd
 import torch
 from PIL import Image
@@ -14,6 +16,33 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import v2
 
 logger = logging.getLogger("ConvNeXtAutoencoder")
+
+
+def grayscale_equalize(img: Image.Image) -> Image.Image:
+    """Convert an RGB PIL image to grayscale then apply histogram equalization.
+
+    The single equalized channel is replicated back into 3 channels (RGB) so
+    the output stays compatible with a pretrained 3-channel backbone
+    (e.g. ConvNeXt expects 3-channel input + ImageNet normalization).
+    """
+    gray = np.array(img.convert("L"))          # [H, W] uint8
+    equalized = cv2.equalizeHist(gray)          # [H, W] uint8, contrast-stretched
+    equalized_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
+    return Image.fromarray(equalized_rgb)
+
+
+class GrayscaleEqualize:
+    """torchvision-style transform wrapper around `grayscale_equalize`.
+
+    Insert into a `v2.Compose([...])` pipeline (operates on PIL images,
+    so place it BEFORE `v2.ToImage()` / `v2.ToDtype()` / `v2.Normalize()`).
+    """
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        return grayscale_equalize(img)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}()"
 
 
 def infer_label_from_filename(filename: str, cfg) -> Optional[str]:
@@ -101,9 +130,20 @@ class AnomalyDataset(Dataset):
 
 def build_transforms(cfg):
     """Build the ImageNet-normalized transform (with/without augmentation),
-    and the plain 'display' transform used for visualisation."""
+    and the plain 'display' transform used for visualisation.
+
+    If cfg.USE_GRAYSCALE_EQUALIZATION is True, images are converted to
+    grayscale + histogram-equalized (then replicated to 3 channels) right
+    before entering the model pipeline (ToImage/ToDtype/Normalize). The
+    `display_tf` used for the "original image" gallery is left untouched so
+    users can still see the true original photo, not the pre-processed one.
+    """
+    use_gray_eq = getattr(cfg, 'USE_GRAYSCALE_EQUALIZATION', False)
+    gray_eq_step = [GrayscaleEqualize()] if use_gray_eq else []
+
     imagenet_tf = v2.Compose([
         v2.Resize(cfg.IMAGE_SIZE),
+        *gray_eq_step,
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),
         v2.Normalize(mean=[0.485, 0.456, 0.406],
@@ -113,6 +153,7 @@ def build_transforms(cfg):
     train_aug_tf = v2.Compose([
         v2.Resize(cfg.IMAGE_SIZE),
         v2.ColorJitter(brightness=cfg.AUG_COLOR_JITTER, contrast=cfg.AUG_COLOR_JITTER),
+        *gray_eq_step,
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),
         v2.Normalize(mean=[0.485, 0.456, 0.406],

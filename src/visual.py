@@ -287,6 +287,118 @@ def visualize_heatmaps(
     print(f'Heatmaps saved → {out}')
 
 
+def _get_display_image(split_arrays: Dict[str, Dict], split: str, idx: int, mode: str) -> np.ndarray:
+    """mode='original' -> raw image as-is.
+    mode='processed'  -> raw image after image processing (heatmap overlay)."""
+    arrs = split_arrays[split]
+    orig = arrs['imgs'][idx]
+    if mode == 'original':
+        return orig
+    elif mode == 'processed':
+        heat = arrs['hmaps'][idx]
+        return overlay_heatmap(orig, heat, alpha=0.5)
+    else:
+        raise ValueError(f"mode must be 'original' or 'processed', got {mode!r}")
+
+
+def render_image_gallery(
+    df_gallery  : pd.DataFrame,
+    split_arrays: Dict[str, Dict],
+    cfg,
+    mode        : str  = 'original',   # 'original' | 'processed'
+    query       : str  = None,
+    split       : str  = None,
+    label       : str  = None,
+    pred_label  : str  = None,
+    correct     : bool = None,
+    n           : int  = 20,
+    ncols       : int  = 5,
+    random_state: int  = 42,
+) -> pd.DataFrame:
+    """Contact-sheet style gallery showing ONE kind of image per cell
+    (either the untouched original photo, or the image after processing —
+    i.e. heatmap overlay). Each thumbnail is captioned with filename,
+    ground-truth, prediction, and score; border colour = green(correct)/red(wrong)."""
+    assert mode in ('original', 'processed'), \
+        "mode must be 'original' or 'processed'"
+
+    df = df_gallery.copy()
+    if split is not None:
+        df = df[df['split'] == split]
+    if label is not None:
+        df = df[df['label_gt'] == label]
+    if pred_label is not None:
+        df = df[df['pred_label'] == pred_label]
+    if correct is not None:
+        df = df[df['correct'] == correct]
+    if query is not None:
+        df = df[df['filename'].str.contains(query, case=False, na=False)]
+
+    if len(df) == 0:
+        print('ไม่พบภาพที่ตรงเงื่อนไขที่กรอง')
+        return df
+
+    if len(df) > n:
+        df = df.sample(n=n, random_state=random_state)
+    df = df.sort_values(['split', 'idx_in_split']).reset_index(drop=True)
+
+    n_imgs = len(df)
+    ncols  = min(ncols, n_imgs)
+    nrows  = int(np.ceil(n_imgs / ncols))
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.3 * ncols, 3.8 * nrows))
+    axes = np.array(axes).reshape(nrows, ncols)
+    for ax in axes.flat:
+        ax.axis('off')
+
+    for i, row in df.iterrows():
+        r, c = divmod(i, ncols)
+        ax = axes[r, c]
+        img = _get_display_image(split_arrays, row['split'], row['idx_in_split'], mode)
+        ax.imshow(img, cmap=None if mode == 'processed' else None)
+
+        ok  = row['correct']
+        clr = '#1B5E20' if ok else '#B71C1C'
+        cap = (f"{row['filename'][:20]}\n"
+               f"GT={row['label_gt']}  Pred={row['pred_label']}\n"
+               f"Score={row['score']:.3f}  {'✓' if ok else '✗'}")
+        ax.set_title(cap, fontsize=7.5, fontweight='bold', color=clr, pad=6)
+
+        ax.axis('on')
+        ax.set_xticks([]); ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_visible(True); sp.set_edgecolor(clr); sp.set_linewidth(2.2)
+
+    # หมายเหตุ: ใช้ชื่อภาษาอังกฤษบนกราฟ เพราะฟอนต์ default ของ matplotlib ส่วนใหญ่
+    # ไม่มี glyph ภาษาไทย (จะขึ้น warning/กล่องสี่เหลี่ยมแทนตัวอักษร)
+    mode_title = 'Original Images' if mode == 'original' \
+        else 'Processed Images (Heatmap Overlay)'
+    backbone_name = getattr(cfg, 'BACKBONE', 'tiny')
+    plt.suptitle(f'{mode_title}\nConvNeXt-{backbone_name.capitalize()} AE Gallery',
+                 fontsize=13, fontweight='bold', y=1.02)
+    plt.tight_layout()
+
+    name_parts = [p for p in [split, label, pred_label] if p]
+    if correct is not None:
+        name_parts.append('correct' if correct else 'incorrect')
+    suffix = '_'.join(name_parts) or 'all'
+    out = f'{cfg.OUTPUT_PATH}/gallery_{mode}_{suffix}.png'
+    plt.savefig(out, dpi=150, bbox_inches='tight')
+    print(f'Gallery [{mode}] saved → {out}')
+    plt.show()
+    return df
+
+
+def gallery_original_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
+    """Gallery แบบที่ 1: แสดงเฉพาะภาพจริง (ก่อนผ่าน image processing)."""
+    return render_image_gallery(df_gallery, split_arrays, cfg, mode='original', **kwargs)
+
+
+def gallery_processed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
+    """Gallery แบบที่ 2: แสดงภาพหลังผ่าน image processing (heatmap overlay)."""
+    return render_image_gallery(df_gallery, split_arrays, cfg, mode='processed', **kwargs)
+
+
 def browse_gallery(
     df_gallery  : pd.DataFrame,
     split_arrays: Dict[str, Dict],

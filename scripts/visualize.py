@@ -28,7 +28,8 @@ from src import io_utils
 from src.visual import (plot_class_distribution, plot_training_history,
                            plot_roc_curves, plot_pr_curves,
                            plot_confusion_matrices, plot_score_distributions,
-                           visualize_heatmaps, browse_gallery)
+                           visualize_heatmaps, browse_gallery,
+                           gallery_original_images, gallery_processed_images)
 
 console = Console()
 
@@ -133,9 +134,20 @@ def main():
     print('\nจำนวนภาพต่อ split × ผลทาย (ถูก/ผิด):')
     print(df_gallery.groupby(['split', 'correct']).size().unstack(fill_value=0))
 
+    # 3-column gallery (original | error map | overlay) — misclassified samples
     _ = browse_gallery(df_gallery, split_arrays, CFG, split='train', correct=False, n=100)
     _ = browse_gallery(df_gallery, split_arrays, CFG, split='test',  correct=False, n=100)
     _ = browse_gallery(df_gallery, split_arrays, CFG, split='val',   correct=False, n=100)
+
+    # ── Output gallery แบบที่ 1: ภาพจริง (original) ────────────────────────
+    # ── Output gallery แบบที่ 2: ภาพหลัง image processing (heatmap overlay) ─
+    for split_name in ['train', 'val', 'test']:
+        _ = gallery_original_images(
+            df_gallery, split_arrays, CFG,
+            split=split_name, n=20, ncols=5)
+        _ = gallery_processed_images(
+            df_gallery, split_arrays, CFG,
+            split=split_name, n=20, ncols=5)
 
     logger.info('All plots/heatmaps rendered.')
 

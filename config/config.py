@@ -55,6 +55,7 @@ class Config:
   AE_MONITOR            : str   = 'val_auroc'
   USE_AUGMENTATION      : bool  = True
   AUG_COLOR_JITTER      : float = 0.20
+  USE_GRAYSCALE_EQUALIZATION : bool = True
 
   def __post_init__(self):
     for p in [self.SAVE_PATH, self.OUTPUT_PATH]:
