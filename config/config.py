@@ -42,7 +42,7 @@ class Config:
   AE_LR             : float = 1e-4
   AE_WEIGHT_DECAY   : float = 5e-4
   AE_BOTTLENECK_CH  : int   = 64
-  AE_PATIENCE       : int   = 15
+  AE_PATIENCE       : int   = 10
   AE_LR_STEP        : int   = 15
   AE_LR_GAMMA       : float = 0.5
 
