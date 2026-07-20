@@ -26,14 +26,14 @@ class Config:
   NORMAL_KEYWORDS  : Tuple[str, ...] = ('false_call','falsecall','good','normal','false call')
   ANOMALY_KEYWORDS : Tuple[str, ...] = ('defect','anomaly','bad','ng')
   # ── ConvNeXt backbone ───────────────────────────────────────────
-  LOSS         : str            = 'SSIM_MSE'
+  LOSS         : str            = 'MSE'
   SSIM_WEIGHT  : float          = 0.5
   MSE_WEIGHT   : float          = 0.5
   OPTIM        : str            = 'Adam (Adaptive Moment Estimation)'
   BACKBONE     : str            = 'tiny'
   IMAGE_SIZE   : Tuple[int,int] = (224, 224)
   # ── DataLoader ──────────────────────────────────────────────────
-  BATCH_SIZE   : int  = 64
+  BATCH_SIZE   : int  = 16
   NUM_WORKERS  : int  = 2
   PIN_MEMORY   : bool = True
 
@@ -42,7 +42,7 @@ class Config:
   AE_LR             : float = 1e-4
   AE_WEIGHT_DECAY   : float = 5e-4
   AE_BOTTLENECK_CH  : int   = 64
-  AE_PATIENCE       : int   = 10
+  AE_PATIENCE       : int   = 15
   AE_LR_STEP        : int   = 15
   AE_LR_GAMMA       : float = 0.5
 
@@ -53,8 +53,8 @@ class Config:
   SCORE_METHOD          : str   = 'topk'
   SCORE_TOPK_PERCENT    : float = 10.0
   AE_MONITOR            : str   = 'val_auroc'
-  USE_AUGMENTATION      : bool  = False
-  AUG_COLOR_JITTER      : float = 0
+  USE_AUGMENTATION      : bool  = True
+  AUG_COLOR_JITTER      : float = 0.20
 
   # ── Preprocessing / Color Mode ──────────────────────────────────────
   # เลือกโหมดสีของภาพก่อนเข้า pipeline ด้วยการตั้งค่า True/False 2 ตัวนี้:
