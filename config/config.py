@@ -13,8 +13,8 @@ class Config:
   VAL_DIR         : str = "validation dataset path"
   TEST_DIR        : str = "test dataset path"
 
-  SAVE_PATH   : str = 'save path(log)'
-  OUTPUT_PATH : str = 'resual path(visual)'
+  SAVE_PATH   : str = 'save log'
+  OUTPUT_PATH : str = 'save image/table'
   VALID_EXT       : Tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp')
 
 
@@ -29,7 +29,7 @@ class Config:
   LOSS         : str            = 'MSE'
   SSIM_WEIGHT  : float          = 0.5
   MSE_WEIGHT   : float          = 0.5
-  OPTIM        : str            = 'Adam (Adaptive Moment Estimation)'
+  OPTIM        : str            = 'Adam'
   BACKBONE     : str            = 'tiny'
   IMAGE_SIZE   : Tuple[int,int] = (224, 224)
   # ── DataLoader ──────────────────────────────────────────────────
@@ -54,8 +54,7 @@ class Config:
   SCORE_TOPK_PERCENT    : float = 10.0
   AE_MONITOR            : str   = 'val_auroc'
   USE_AUGMENTATION      : bool  = False
-  AUG_COLOR_JITTER      : float = 0
-
+  AUG_COLOR_JITTER      : float = 0.20
 
   # ── Preprocessing / Color Mode ──────────────────────────────────────
   # เลือกโหมดสีของภาพก่อนเข้า pipeline ด้วยการตั้งค่า True/False 2 ตัวนี้:
@@ -80,11 +79,11 @@ class Config:
   def COLOR_MODE(self) -> str:
     """โหมดปรับ Image Processing."""
     if self.USE_GRAYSCALE_EQUALIZATION:
-      return 'grayscale_equalized'
+      return 'GRAYSCALE_EQUAILAZATION'
     elif self.USE_GRAYSCALE:
-      return 'grayscale'
+      return 'GRAYSCALE'
     else:
-      return 'rgb'
+      return 'RGB'
 
   def __post_init__(self):
     for p in [self.SAVE_PATH, self.OUTPUT_PATH]:

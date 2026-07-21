@@ -70,13 +70,37 @@ def main():
     set_seed(CFG.SEED)
 
     console.print(Panel(
-        f'Device     : [bold cyan]{CFG.DEVICE}[/bold cyan]\n'
-        f'Backbone   : [bold cyan]ConvNeXt-{CFG.BACKBONE.capitalize()}[/bold cyan]\n'
-        f'AE Epochs  : [bold cyan]{CFG.AE_EPOCHS}[/bold cyan]\n'
-        f'LR         : [bold cyan]{CFG.AE_LR}[/bold cyan]\n'
-        f'Bottleneck : [bold cyan]{CFG.AE_BOTTLENECK_CH} ch[/bold cyan]\n'
-        f'Color mode : [bold cyan]{CFG.COLOR_MODE}[/bold cyan]',
-        title='[bold]Config Loaded[/bold]'
+        f'Device        : [bold cyan]{CFG.DEVICE}[/bold cyan]\n'
+        f'Backbone      : [bold cyan]ConvNeXt-{CFG.BACKBONE.capitalize()}[/bold cyan]\n'
+        f'Color mode    : [bold cyan]{CFG.COLOR_MODE}[/bold cyan]',
+        f'Loss function : [bold cyan]{CFG.LOSS}[/bold cyan]',
+        f'Optimizer     : [bold cran]{CFG.OPTIM}[/bold cyan]',
+        f'Score method  : [bold cray]{CFG.SCORE_METHOD}[/bold cray]',
+        f'AE monitor    : [bold cray]{CFG.SCORE_TOPK_PERCENT}[/bold cray]',
+        title='[bold]BACKBONE[/bold]'
+    ))
+
+    print('\n')
+
+    console.print(Panel(
+        f'SEED          : [bold gray]{CFG.SEED}[/bold gray]',
+        f'IMAGE         : [bold gray]{CFG.IMAGE_SIZE}[/bold gray]',
+        f'BRIGHTNESS    : [bold gray]{CFG.AUG_COLOR_JITTER }[/bold gray]',
+        f'MSE WEIGHT    : [bold gray]{CFG.MSE_WEIGHT}[/bold gray]',
+        f'SSIM WEIGHT   : [bold gray]{CFG.SSIM_WEIGHT}[/bold gray]',
+        f'BATCH SIZE    : [bold gray]{CFG.BATCH_SIZE}[/bold gray]',
+        f'EPOCHS        : [bold gray]{CFG.AE_EPOCH}[/bold gray]',
+        f'LR            : [bold gray]{CFG.AE_LR}[/bold gray]',
+        f'WEIGHT DECAY  : [bold gray]{CFG.AE_WEIGHT_DECAY}[/bold gray]',
+        f'BOTTLENECK    : [bold gray]{CFG.AE_BOTTLENECK_CH} CH[/bold gray]',
+        f'PATIENCE      : [bold gray]{CFG.AE_PATIENCE}[/bold gray]',
+        f'STEP          : [bold gray]{CFG.AE_LR_STEP}[/bold gray]',
+        f'GAMMA         : [bold gray]{CFG.AE_LR_GAMMA}[/bold gray]',
+        f'HEATMAP SIGMA : [bold red]{CFG.HEATMAP_SIGMA}[/bold red]',
+        f'THRESHOLD     : [bold red]{CFG.THRESHOLD_PERCENTILE}%[/bold red]',
+        f'TOP-K%        : [bold red]{CFG.SCORE_TOPK_PERCENT}%[/bold red]',
+        title='[bold]Parameter[/bold]'
+        
     ))
 
     df_train = scan_directory(CFG.TRAIN_DIR, CFG)
