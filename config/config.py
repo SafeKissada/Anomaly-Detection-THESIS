@@ -56,34 +56,6 @@ class Config:
   USE_AUGMENTATION      : bool  = False
   AUG_COLOR_JITTER      : float = 0
 
-  # ── Preprocessing / Color Mode ──────────────────────────────────────
-  # เลือกโหมดสีของภาพก่อนเข้า pipeline ด้วยการตั้งค่า True/False 2 ตัวนี้:
-  #
-  #   โหมด RGB (ค่า default, ไม่แปลงสี)
-  #     USE_GRAYSCALE = False, USE_GRAYSCALE_EQUALIZATION = False
-  #
-  #   โหมด Grayscale (แปลงเป็นขาวดำ ไม่ equalize)
-  #     USE_GRAYSCALE = True,  USE_GRAYSCALE_EQUALIZATION = False
-  #
-  #   โหมด Grayscale + Histogram Equalization (แปลงขาวดำ + เพิ่ม contrast)
-  #     USE_GRAYSCALE_EQUALIZATION = True
-  #     (ตั้ง USE_GRAYSCALE เป็นค่าใดก็ได้ — equalization บังคับใช้ grayscale
-  #      อยู่แล้วในตัว จึงมีความสำคัญเหนือกว่า USE_GRAYSCALE เสมอ)
-  #
-  # หมายเหตุ: เลือกได้ทีละโหมดเท่านั้น ถ้า USE_GRAYSCALE_EQUALIZATION=True
-  # ระบบจะใช้โหมด grayscale+equalize เสมอ ไม่ว่า USE_GRAYSCALE จะเป็นอะไร
-  USE_GRAYSCALE               : bool = False
-  USE_GRAYSCALE_EQUALIZATION  : bool = False
-
-  @property
-  def COLOR_MODE(self) -> str:
-    """โหมดสีที่ระบบจะใช้จริง (คำนวณจากแฟล็กทั้งสองด้านบน)."""
-    if self.USE_GRAYSCALE_EQUALIZATION:
-      return 'grayscale_equalized'
-    elif self.USE_GRAYSCALE:
-      return 'grayscale'
-    else:
-      return 'rgb'
 
   # ── Preprocessing / Color Mode ──────────────────────────────────────
   # เลือกโหมดสีของภาพก่อนเข้า pipeline ด้วยการตั้งค่า True/False 2 ตัวนี้:
@@ -99,14 +71,14 @@ class Config:
   #     (ตั้ง USE_GRAYSCALE เป็นค่าใดก็ได้ — equalization บังคับใช้ grayscale
   #      อยู่แล้วในตัว จึงมีความสำคัญเหนือกว่า USE_GRAYSCALE เสมอ)
   #
-  # หมายเหตุ: เลือกได้ทีละโหมดเท่านั้น ถ้า USE_GRAYSCALE_EQUALIZATION=True
+  # Note: เลือกได้ทีละโหมด ถ้า USE_GRAYSCALE_EQUALIZATION=True
   # ระบบจะใช้โหมด grayscale+equalize เสมอ ไม่ว่า USE_GRAYSCALE จะเป็นอะไร
   USE_GRAYSCALE               : bool = False
   USE_GRAYSCALE_EQUALIZATION  : bool = False
 
   @property
   def COLOR_MODE(self) -> str:
-    """โหมดสีที่ระบบจะใช้จริง (คำนวณจากแฟล็กทั้งสองด้านบน)."""
+    """โหมดปรับ Image Processing."""
     if self.USE_GRAYSCALE_EQUALIZATION:
       return 'grayscale_equalized'
     elif self.USE_GRAYSCALE:

@@ -1,6 +1,6 @@
 """Sanity check สำหรับ SSIM loss ก่อนรัน scripts/train.py เต็มรูปแบบ
 
-ทำไมต้องเช็คก่อน:
+ทำไมต้องเช็ค:
   SSIMLoss (src/losses.py) ใช้ค่าคงที่ C1=0.01^2, C2=0.03^2 ซึ่งออกแบบมา
   โดยสมมติว่าอินพุตมี dynamic range เป็นบวก (~[0,1] แบบภาพ) แต่ในโค้ดนี้
   SSIM ถูกคำนวณบน "feature map ที่ normalize แบบ z-score" (mean~0, std~1,
@@ -11,12 +11,6 @@
     2. ค่าที่ได้อยู่ในช่วงที่พอสมเหตุสมผลหรือไม่
        (loss ควรใกล้ 0 เมื่อ recon == feat, ควรเพิ่มขึ้นเมื่อใส่ noise)
     3. เทียบ scale ของ SSIM loss กับ MSE loss บนอินพุตชุดเดียวกัน
-
-วิธีรัน:
-    python scripts/check_ssim_loss.py
-
-ถ้าผ่านหมด (ไม่มี NaN/Inf, monotonic ตาม noise) ค่อยไปรัน scripts/train.py
-พร้อม CFG.LOSS = 'SSIM' ต่อได้อย่างมั่นใจขึ้น
 """
 
 import sys

@@ -434,7 +434,7 @@ def gallery_processed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.Data
 
 
 def gallery_preprocessed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
-    """Gallery: แสดงภาพที่ผ่าน preprocessing จริง ๆ ที่ป้อนเข้าโมเดล
+    """Gallery: แสดงภาพที่ผ่าน preprocessing จริง  ที่ป้อนเข้าโมเดล
     (grayscale หรือ grayscale+equalization) โดยไม่มี heatmap overlay.
     มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'rgb'."""
     return render_image_gallery(df_gallery, split_arrays, cfg, mode='preproc', **kwargs)
