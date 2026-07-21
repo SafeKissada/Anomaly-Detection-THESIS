@@ -20,8 +20,28 @@ class SSIMLoss(nn.Module):
     g1d = self._gaussian_kernel1d(window_size, sigma)
     g2d = g1d.unsqueeze(1) @ g1d.unsqueeze(0)
     return g2d.unsqueeze(0).unsqueeze(0)
+  
+  def _rescale_to_unit_range(self, x, y):
+    # SSIM's C1/C2 constants assume inputs live in a known, bounded, positive
+    # dynamic range (classically [0, 1] for image intensities). Here x/y are
+    # z-score normalized deep features (mean ~0, unbounded sign), so C1/C2
+    # have no meaningful reference scale unless we first map both tensors
+    # into a shared [0, 1] range. We compute a joint min/max per-sample
+    # (over channel+spatial dims, shared between recon & target so the
+    # relative difference between them is preserved) and detach it so it
+    # behaves as a fixed rescaling constant rather than a learnable scale.
+    with torch.no_grad():
+        flat = torch.cat([x, y], dim=1)
+        dims = tuple(range(1, flat.dim()))
+        lo = flat.amin(dim=dims, keepdim=True)
+        hi = flat.amax(dim=dims, keepdim=True)
+        data_range = (hi - lo).clamp(min=1e-6)
+    x01 = ((x - lo) / data_range).clamp(0.0, 1.0)
+    y01 = ((y - lo) / data_range).clamp(0.0, 1.0)
+    return x01, y01
 
   def _ssim_map(self, x, y):
+    x, y = self._rescale_to_unit_range(x, y)
     c = x.shape[1]
     window = self.window.to(device=x.device, dtype=x.dtype).expand(c, 1, self.window_size, self.window_size)
     pad = self.window_size // 2
