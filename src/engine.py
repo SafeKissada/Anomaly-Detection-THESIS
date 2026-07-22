@@ -179,6 +179,31 @@ def train_autoencoder(
     print(f'\n✓ Best autoencoder loaded from {save_path}  (monitor={monitor})')
     return history
 
+def upsample_and_smooth(
+    err_map  : np.ndarray,
+    sigma    : float,
+    out_size : Tuple[int, int]
+) -> np.ndarray:
+    """Resize a native-resolution error map up to out_size then Gaussian-smooth it.
+ 
+    This is the SINGLE shared post-processing step between:
+      (a) training-time validation scoring (train_autoencoder -> val_auroc,
+          used by EarlyStopping to select the checkpoint), and
+      (b) final scoring (score_dataset_split -> process_single_heatmap,
+          used for the reported test/val/train AUC-ROC, F1, etc.)
+ 
+    Both call-sites MUST route through this exact function (not a
+    reimplementation) so that the criterion used to pick the "best" model
+    is provably the same criterion used to report its final performance.
+    Resizing (bilinear) and Gaussian blur are both non-linear w.r.t. the
+    spatial ranking of error values, so computing them at only one of the
+    two call-sites would let the two rankings diverge silently.
+    """
+    score_map_up = cv2.resize(
+        err_map,
+        (out_size[1], out_size[0]),
+        interpolation=cv2.INTER_LINEAR)
+    return gaussian_filter(score_map_up, sigma=sigma)
 
 def process_single_heatmap(
     feat_t       :  torch.Tensor,       # [C, H, W] tensor
