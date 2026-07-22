@@ -37,11 +37,10 @@ from rich.table import Table
 from rich.panel import Panel
 
 from config.config import Config, set_seed
-from src.data.dataset import (AnomalyDataset, scan_directory, build_transforms,
-                              make_loader)
+from src.data.dataset import build_datasets_and_loaders
 from src.model.backbone_baseline import ConvNeXtExtractor
 from src.model.autoencoder import FeatureAutoencoder
-from src.engine import train_autoencoder, score_dataset_split
+from src.engine import train_autoencoder, score_dataset_split, get_best_epoch
 from src.evaluate import (compute_metrics, select_percentile_threshold,
                           oracle_threshold_diagnostic)
 from src import io_utils
@@ -102,29 +101,33 @@ def main():
         title='[bold]Parameter[/bold]'
         
     ))
-
-    df_train = scan_directory(CFG.TRAIN_DIR, CFG)
-    df_val   = scan_directory(CFG.VAL_DIR,   CFG)
-    df_test  = scan_directory(CFG.TEST_DIR,  CFG)
+    # ── Datasets & DataLoaders ────────────────────────────────────────────────
+    # Previously this block re-implemented (scan + transforms + dataset +
+    # loader, for train/val/test/normal-only) inline, duplicating the exact
+    # same logic already available in build_datasets_and_loaders(). Any future
+    # change to that logic would have needed to be made in two places at once
+    # and could silently drift apart. Now there is a single source of truth.
+    io_ = build_datasets_and_loaders(CFG)
+    df_train, df_val, df_test = io_['df_train'], io_['df_val'], io_['df_test']
+    train_loader = io_['train_loader']
+    val_loader   = io_['val_loader']
+    test_loader  = io_['test_loader']
+    normal_loader = io_['normal_loader']
+    train_ds, val_ds, test_ds, normal_ds = (
+        io_['train_ds'], io_['val_ds'], io_['test_ds'], io_['normal_ds'])
 
     for name, df in [('TRAIN',df_train),('VAL',df_val),('TEST',df_test)]:
         console.print(f'[{name:5}] total={len(df):,}  {df["label"].value_counts().to_dict()}')
 
-    # ── Datasets & DataLoaders ────────────────────────────────────────────────
-    imagenet_tf, train_aug_tf, display_tf, preproc_display_tf = build_transforms(CFG)
-
-    train_ds = AnomalyDataset(df_train, imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
-    val_ds   = AnomalyDataset(df_val,   imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
-    test_ds  = AnomalyDataset(df_test,  imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
-
-    train_loader = make_loader(train_ds, CFG, shuffle=True)
-    val_loader   = make_loader(val_ds,   CFG)
-    test_loader  = make_loader(test_ds,  CFG)
-
-    df_train_normal = df_train[df_train['label']=='normal'].reset_index(drop=True)
-    normal_norm_tf = train_aug_tf if CFG.USE_AUGMENTATION else imagenet_tf
-    normal_ds      = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
-    normal_loader  = make_loader(normal_ds, CFG, shuffle=True)
+    # Report how many files were excluded per split due to ambiguous/missing
+    # filename keywords (previously only visible in the log file, not in any
+    # artifact — see .attrs populated by scan_directory()).
+    dropped_counts = {
+        name: df.attrs.get('n_dropped_ambiguous_or_unlabelled', 0)
+        for name, df in [('train', df_train), ('val', df_val), ('test', df_test)]
+    }
+    if any(dropped_counts.values()):
+        console.print(f'[yellow]Dropped (ambiguous/unlabelled) per split: {dropped_counts}[/yellow]')
 
     print(f'Train : {len(train_ds):,}  |  Normal-only : {len(normal_ds):,}  '
           f'(augmentation={"ON" if CFG.USE_AUGMENTATION else "OFF"})')
@@ -148,9 +151,27 @@ def main():
     ).to(CFG.DEVICE)
 
     total_ae = sum(p.numel() for p in ae.parameters())
+
+    # Report the ACTUAL bottleneck spatial resolution instead of a hardcoded
+    # "@4x4" assumption (which silently becomes wrong the moment IMAGE_SIZE
+    # or BACKBONE changes). This is also a lightweight, non-invasive way to
+    # surface the "how coarse is the heatmap before upsampling?" limitation
+    # (see Findings 2.7) at run time rather than only in a static report.
+    with torch.no_grad():
+      _dummy_feat = torch.zeros(1, extractor.out_channels, *extractor.spatial_size).to(CFG.DEVICE)
+      _bneck_shape = tuple(ae.bottleneck(_dummy_feat).shape[-2:])
+    bneck_note = ''
+    if min(_bneck_shape) <= 4:
+      bneck_note = (
+          f'  [yellow]note: bottleneck is only {_bneck_shape[0]}×{_bneck_shape[1]} — '
+          f'error maps at this resolution are coarse before upsampling; small/'
+          f'thin defects may be smoothed away by the Gaussian blur step[/yellow]\n'
+      )
     console.print(Panel(
         f'Feature channels : [cyan]{extractor.out_channels}[/cyan]\n'
-        f'Bottleneck       : [cyan]{CFG.AE_BOTTLENECK_CH} ch[/cyan]\n'
+        f'Bottleneck       : [cyan]{CFG.AE_BOTTLENECK_CH} ch @ '
+        f'{_bneck_shape[0]}×{_bneck_shape[1]}[/cyan]\n'
+        f'{bneck_note}'
         f'AE params        : [cyan]{total_ae:,}[/cyan]  (all trainable)',
         title='[bold]Autoencoder Ready[/bold]'
     ))
@@ -236,6 +257,14 @@ def main():
     make_pred_df(test_paths,  test_labels,  test_scores,  test_metrics).to_csv(
         f'{CFG.OUTPUT_PATH}/predictions_test.csv',  index=False)
 
+    # Use the epoch actually selected by EarlyStopping (per cfg.AE_MONITOR),
+    # not the global min over every epoch ever seen — those are only
+    # guaranteed to be the same epoch when AE_MONITOR == 'val_loss'. With the
+    # default AE_MONITOR='val_auroc', the previous `min(history['val_loss'])`
+    # could silently report a val_loss value that has nothing to do with the
+    # checkpoint that was actually saved and loaded.
+    best_ep = get_best_epoch(history, CFG.AE_MONITOR)
+
     summary_dict = {
         'experiment' : CFG.EXPERIMENT,
         'backbone'   : f'ConvNeXt-{CFG.BACKBONE.capitalize()}',
@@ -244,7 +273,11 @@ def main():
         'bottleneck' : CFG.AE_BOTTLENECK_CH,
         'threshold'  : float(threshold),
         'ae_epochs'  : len(history['train_loss']),
-        'best_val_loss': float(min(history['val_loss'])),
+        'best_epoch' : best_ep + 1,
+        'monitor'    : CFG.AE_MONITOR,
+        'best_val_loss'  : float(history['val_loss'][best_ep]),
+        'best_val_auroc' : float(history['val_auroc'][best_ep]),
+        'dropped_ambiguous_or_unlabelled_per_split': dropped_counts,
         'results': {
             split: {k: float(v) for k,v in m.items()
                     if isinstance(v, float) and not np.isnan(v)}
@@ -269,8 +302,9 @@ def main():
         f'  Loss Function  : {CFG.LOSS}',
         f'  Optimization   : {CFG.OPTIM}',
         f'  Feature dim    : {extractor.out_channels} ch (Stage2+Stage3)',
-        f'  Bottleneck     : {CFG.AE_BOTTLENECK_CH} ch @ 4×4',
-        f'  Trained epochs : {len(history["train_loss"])}  (best val={min(history["val_loss"]):.6f})',
+        f'  Bottleneck     : {CFG.AE_BOTTLENECK_CH} ch @ {_bneck_shape[0]}×{_bneck_shape[1]}',
+        f'  Trained epochs : {len(history["train_loss"])}  (best epoch={best_ep+1}, '
+        f'val_loss={history["val_loss"][best_ep]:.6f}, monitor={CFG.AE_MONITOR})',
         f'  Threshold      : {threshold:.4f}  (val {CFG.THRESHOLD_PERCENTILE:.0f}th pct of normal)','',
         '  ── Test Set Results ─────────────────────',
         f'  AUC-ROC   : {test_metrics["auc"]:.4f}',
