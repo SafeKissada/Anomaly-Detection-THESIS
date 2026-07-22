@@ -1,0 +1,183 @@
+================================================================================
+บันทึกการแก้ไขโค้ด (FIX LOG)
+ConvNeXt Feature-Space Autoencoder — SafeKissada/__Thesis__
+วันที่แก้ไข: 22 กรกฎาคม 2026
+อ้างอิงจาก: Thesis_Analysis_Report.txt หัวข้อ 2.1 และ 2.3
+================================================================================
+
+เอกสารนี้บันทึกรายละเอียดการแก้ไขบั๊ก 2 จุด (เรียงตามลำดับในรายงานหลัก) คือ
+  A. [2.1] SSIM ใช้ผิดสมมติฐานทางคณิตศาสตร์               → แก้ไฟล์ src/losses.py
+  B. [2.3] เกณฑ์เลือกโมเดล vs เกณฑ์รายงานผลคนละ resolution → แก้ไฟล์ src/engine.py
+ทั้งสองจุดมีโครงสร้างเดียวกัน: (1) ปัญหาเดิม (2) เหตุผลเชิงทฤษฎีที่ใช้แก้
+(3) โค้ดก่อนแก้ (4) โค้ดหลังแก้ (5) ผลการทดสอบยืนยัน (6) อิมแพคต่อไฟล์อื่น/ตัวเลข
+
+
+================================================================================
+A. [2.1] SSIM ใช้ผิดสมมติฐานทางคณิตศาสตร์ (mismatched dynamic range)
+   ไฟล์ที่แก้: src/losses.py — class SSIMLoss
+   สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+A.1 ปัญหาเดิม
+--------------------------------------------------------------------------------
+สูตร SSIM ดั้งเดิม (Wang, Bovik, Sheikh, Simoncelli, 2004, "Image Quality
+Assessment: From Error Visibility to Structural Similarity", IEEE TIP) สมมติว่า
+x, y คือค่าความสว่างของภาพที่เป็นบวกเสมอ อยู่ใน dynamic range คงที่และรู้ค่า
+(เช่น [0,1] หรือ [0,255]) ค่าคงที่ C1 = (K1*L)^2, C2 = (K2*L)^2 (K1=0.01,
+K2=0.03, L=dynamic range) ถูกออกแบบมาให้เสถียรกับ dynamic range นั้นโดยเฉพาะ
+
+แต่ในโค้ดนี้ SSIM ถูกคำนวณบน "feature map ที่ normalize แบบ z-score" (ผ่าน
+extractor.normalize() ทำ (feat-mean)/std) ซึ่งมีค่าเฉลี่ย ~0 และมีค่าติดลบได้
+ไม่มี dynamic range คงที่ที่รู้ล่วงหน้า ค่าคงที่ C1=0.01^2=0.0001, C2=0.03^2=0.0009
+ที่ hardcode ไว้จึงไม่มีความหมายอ้างอิงใด ๆ กับสเกลจริงของข้อมูล ทำให้พจน์
+luminance (2*mu_x*mu_y + C1)/(mu_x^2+mu_y^2+C1) และพจน์ contrast/structure
+ไม่ได้ทำหน้าที่ตามที่ทฤษฎีตั้งใจออกแบบไว้อีกต่อไป
+
+หลักฐานในโค้ดเดิม: ทีมผู้พัฒนาเองรู้ปัญหานี้อยู่แล้ว จึงเขียน scripts/ssim_check.py
+ขึ้นมาโดยเฉพาะเพื่อ sanity-check ปัญหานี้ก่อนใช้ CFG.LOSS='SSIM' หรือ 'SSIM_MSE' จริง
+
+--------------------------------------------------------------------------------
+A.2 เหตุผลเชิงทฤษฎีที่ใช้ในการแก้ไข
+--------------------------------------------------------------------------------
+หลักการ: ถ้าจะใช้สูตร SSIM ตามนิยามดั้งเดิม (ไม่ใช่แค่ "หยิบสูตรมาคำนวณเฉย ๆ")
+เงื่อนไขที่ต้องคงไว้คือ "ข้อมูลนำเข้าต้องอยู่ใน dynamic range ที่รู้ค่าแน่นอน
+และเป็นบวก" เพื่อให้ค่าคงที่ C1, C2 (ซึ่งมีหน้าที่ stabilize การหารเมื่อ mean/
+variance เข้าใกล้ศูนย์ และกำหนดความไวของ SSIM ต่อความต่างเล็ก ๆ น้อย ๆ) ทำงาน
+ตามที่ทฤษฎีตั้งใจ
+
+ทางเลือกที่พิจารณา:
+  1) ปรับ C1, C2 ให้สัมพันธ์กับ dynamic range จริงของ feature ที่ normalize แล้ว
+     (เช่น ประมาณ L จาก running max-min) — ทำได้ แต่ต้องประมาณค่า L ซึ่งไม่แน่นอน
+     และแปรผันตาม backbone/dataset ที่ใช้
+  2) Rescale x, y ให้อยู่ในช่วง [0,1] แบบ dynamic ก่อนเข้าสูตร SSIM (เลือกใช้) —
+     คำนวณ min/max ของ x, y "ร่วมกัน" (joint range) ต่อ sample แล้ว affine-transform
+     ทั้งคู่ด้วยค่าเดียวกัน ทำให้ (ก) ความสัมพันธ์เชิงสัมพัทธ์ระหว่าง x กับ y ยังคง
+     เดิมทุกประการ (ไม่ใช่ rescale แยกกันซึ่งจะทำให้เทียบกันไม่ได้) และ (ข) เมื่อ
+     ข้อมูลอยู่ใน [0,1] แล้ว ค่าคงที่ C1=0.01^2, C2=0.03^2 มาตรฐานกลับมาใช้ได้ตรง
+     ตามทฤษฎีต้นฉบับทันที โดยไม่ต้องเดาค่า L เอง
+  3) รายงานตรงไปตรงมาว่าเป็น "generalized structural-correlation loss" ไม่ใช่
+     SSIM ตามนิยามภาพ — ใช้ได้แต่ไม่แก้ปัญหาที่ต้นตอ
+
+เลือกใช้ทางเลือกที่ 2 เพราะแก้ปัญหาที่ต้นเหตุจริง (ทำให้สมมติฐานของสูตรเป็นจริง)
+โดยไม่ต้องประมาณค่าคงที่ใหม่แบบไม่มีหลักอ้างอิง และไม่กระทบ normalization หลัก
+ของทั้งระบบ (AE ยังเทรนบน z-score feature เดิมทุกจุด แก้แค่ทางเข้า SSIM เท่านั้น)
+
+หมายเหตุสำคัญ: ค่า min/max ที่ใช้ rescale ถูก detach() ออกจาก computational graph
+โดยตั้งใจ (ไม่ backprop ผ่านมัน) เพื่อให้มันทำหน้าที่เป็น "ค่าคงที่สำหรับ rescale
+ต่อ batch" เท่านั้น ไม่ใช่พารามิเตอร์ที่เรียนรู้ได้ ป้องกัน second-order gradient
+effect ที่ไม่ตั้งใจ (คล้ายหลักการเดียวกับที่ BatchNorm ไม่ backprop ผ่าน running
+statistics ตอน inference)
+
+--------------------------------------------------------------------------------
+A.3 โค้ดก่อนแก้ไข (src/losses.py)
+--------------------------------------------------------------------------------
+  def _ssim_map(self, x, y):
+    c = x.shape[1]
+    window = self.window.to(device=x.device, dtype=x.dtype).expand(c, 1, self.window_size, self.window_size)
+    pad = self.window_size // 2
+
+    mu_x = F.conv2d(x, window, padding=pad, groups=c)
+    mu_y = F.conv2d(y, window, padding=pad, groups=c)
+    mu_x2, mu_y2, mu_xy = mu_x * mu_x, mu_y * mu_y, mu_x * mu_y
+
+    sigma_x2 = F.conv2d(x * x, window, padding=pad, groups=c) - mu_x2
+    sigma_y2 = F.conv2d(y * y, window, padding=pad, groups=c) - mu_y2
+    sigma_xy = F.conv2d(x * y, window, padding=pad, groups=c) - mu_xy
+
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+               ((mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2) + 1e-12)
+    return ssim_map
+
+--------------------------------------------------------------------------------
+A.4 โค้ดหลังแก้ไข (src/losses.py)
+--------------------------------------------------------------------------------
+  def _rescale_to_unit_range(self, x, y):
+    # SSIM's C1/C2 constants assume inputs live in a known, bounded, positive
+    # dynamic range (classically [0, 1] for image intensities). Here x/y are
+    # z-score normalized deep features (mean ~0, unbounded sign), so C1/C2
+    # have no meaningful reference scale unless we first map both tensors
+    # into a shared [0, 1] range. We compute a joint min/max per-sample
+    # (over channel+spatial dims, shared between recon & target so the
+    # relative difference between them is preserved) and detach it so it
+    # behaves as a fixed rescaling constant rather than a learnable scale.
+    with torch.no_grad():
+      flat = torch.cat([x, y], dim=1)
+      dims = tuple(range(1, flat.dim()))
+      lo = flat.amin(dim=dims, keepdim=True)
+      hi = flat.amax(dim=dims, keepdim=True)
+      data_range = (hi - lo).clamp(min=1e-6)
+    x01 = ((x - lo) / data_range).clamp(0.0, 1.0)
+    y01 = ((y - lo) / data_range).clamp(0.0, 1.0)
+    return x01, y01
+
+  def _ssim_map(self, x, y):
+    x, y = self._rescale_to_unit_range(x, y)
+    c = x.shape[1]
+    window = self.window.to(device=x.device, dtype=x.dtype).expand(c, 1, self.window_size, self.window_size)
+    pad = self.window_size // 2
+
+    mu_x = F.conv2d(x, window, padding=pad, groups=c)
+    mu_y = F.conv2d(y, window, padding=pad, groups=c)
+    mu_x2, mu_y2, mu_xy = mu_x * mu_x, mu_y * mu_y, mu_x * mu_y
+
+    sigma_x2 = F.conv2d(x * x, window, padding=pad, groups=c) - mu_x2
+    sigma_y2 = F.conv2d(y * y, window, padding=pad, groups=c) - mu_y2
+    sigma_xy = F.conv2d(x * y, window, padding=pad, groups=c) - mu_xy
+
+    # Now that x, y are genuinely in [0, 1], the standard Wang et al. (2004)
+    # constants (K1=0.01, K2=0.03, L=1) are valid again.
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+               ((mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2) + 1e-12)
+    return ssim_map
+
+หมายเหตุ: เมธอด forward(), dissimilarity_map() ของ SSIMLoss และทั้งคลาส
+CombinedLoss (ซึ่งเรียกใช้ self.ssim ภายใน) "ไม่ต้องแก้เลย" เพราะทุกจุดเรียกผ่าน
+_ssim_map() ตัวเดียวกันหมด แก้ต้นทางจุดเดียวก็ครอบคลุมทั้งระบบ
+
+--------------------------------------------------------------------------------
+A.5 ผลการทดสอบยืนยัน
+--------------------------------------------------------------------------------
+ทดสอบด้วย feature จำลองที่ z-score normalize แล้ว (มีค่าติดลบ เหมือนของจริง):
+
+  feat = torch.randn(2, 16, 14, 14) * 1.3 - 0.2
+
+  1) input เหมือนกันเป๊ะ (feat, feat):
+       loss = 0.0                                    <- ถูกต้องตามทฤษฎี (SSIM=1)
+
+  2) เพิ่ม noise ทีละระดับ (ทดสอบ monotonicity):
+       noise_std=0.0 : loss=0.00000
+       noise_std=0.1 : loss=0.00173
+       noise_std=0.3 : loss=0.01439
+       noise_std=0.6 : loss=0.05393
+       noise_std=1.0 : loss=0.12554
+       noise_std=2.0 : loss=0.28018
+     -> loss เพิ่มขึ้นแบบ monotonic ตลอด ไม่มีค่ากระโดดหรือผิดปกติ
+
+  3) ทดสอบ CombinedLoss(alpha=0.5, beta=0.5):
+       loss identical    = 0.0
+       loss noisy(std=0.5) = 0.1428726315498352
+
+  4) เช็ค NaN/Inf: ไม่มีทั้งคู่ (False, False)
+
+สรุป: SSIM ทำงานถูกต้องตามทฤษฎีแล้วหลังแก้ไข (identity -> 0, monotonic ตาม noise,
+เสถียรเชิงตัวเลข)
+
+--------------------------------------------------------------------------------
+A.6 อิมแพคของการแก้ไข
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้              : src/losses.py ไฟล์เดียว
+  ฟังก์ชันที่เพิ่ม         : _rescale_to_unit_range() (เมธอดใหม่ในคลาส SSIMLoss)
+  ฟังก์ชันที่แก้           : _ssim_map() (เพิ่ม 1 บรรทัดเรียก rescale ก่อนคำนวณ)
+  ฟังก์ชัน/ไฟล์ที่ไม่ต้องแตะ : forward(), dissimilarity_map(), CombinedLoss,
+                            get_criterion(), elementwise_error_map(),
+                            src/engine.py, scripts/train.py, scripts/visualize.py
+  ผลต่อ training ที่ใช้ MSE ล้วน (E0,E1,E2 ใน Colab notebook) : ไม่กระทบเลย
+  ผลต่อ training ที่มี SSIM อยู่ด้วย (E3-E8)                 : ค่า loss/heatmap
+      จะเปลี่ยนไปจากที่เคยรัน (คำนวณถูกต้องขึ้น) -> ต้องรันใหม่ทั้งหมดถ้าจะใช้
+      ตัวเลขจากโค้ดเวอร์ชันนี้ในวิทยานิพนธ์
+  ข้อควรทำต่อ             : รัน scripts/ssim_check.py ซ้ำบน feature จริงของ
+      dataset (ไม่ใช่แค่ข้อมูลจำลอง) ก่อนรัน E3-E8 ใหม่ เพื่อยืนยันพฤติกรรมบน
+      ข้อมูลจริง
