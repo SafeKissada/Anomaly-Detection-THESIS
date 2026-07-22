@@ -128,9 +128,29 @@ def train_autoencoder(
 
           v_loss = criterion(recon, feats)
           val_loss += v_loss.item() * feats.size(0)
-          error_map_raw   = elementwise_error_map(feats, recon, criterion)   # [B, H, W]
-          per_sample_loss = error_map_raw.mean(dim=(1, 2))                    # [B]
-          error_map_v     = aggregate_score_torch(error_map_raw, cfg)         # [B]
+          error_map_raw   = elementwise_error_map(feats, recon, criterion)   # [B] (diagnostic only, unaffected)
+          per_sample_loss = error_map_raw.mean(dim=(1, 2)) # [B] (diagnostic only, unaffected)
+           
+          # IMPORTANT (fix for the train/eval scoring-resolution mismatch):
+          # The anomaly score used for val_auroc (which drives EarlyStopping /
+          # checkpoint selection via cfg.AE_MONITOR) must be computed with the
+          # EXACT SAME post-processing pipeline as the final reported metrics
+          # in score_dataset_split(): upsample to cfg.IMAGE_SIZE, Gaussian-smooth
+          # with cfg.HEATMAP_SIGMA, then aggregate with cfg.SCORE_METHOD.
+          # We therefore route every sample through upsample_and_smooth() +
+          # aggregate_score() here instead of aggregate_score_torch() on the
+          # raw, native-resolution map. This is done on CPU (cv2/scipy have no
+          # GPU batched equivalent) which is slightly slower per epoch, but
+          # only affects the validation pass, not the training forward/backward.                 
+          
+          error_map_raw_np = error_map_raw.detach().cpu().numpy()
+          batch_scores = np.empty(error_map_raw_np.shape[0], dtype=np.float32)
+          for i in range(error_map_raw_np.shape[0]):
+            smoothed_map = upsample_and_smooth(
+                error_map_raw_np[i],
+                sigma=cfg.HEATMAP_SIGMA,
+                out_size=cfg.IMAGE_SIZE)
+            batch_scores[i] = aggregate_score(smoothed_map, cfg)
 
           batch_y = np.array([1 if l == 'anomaly' else 0 for l in batch_labels])
           normal_mask = (batch_y == 0)
@@ -138,7 +158,7 @@ def train_autoencoder(
             normal_loss_sum += per_sample_loss.cpu().numpy()[normal_mask].sum()
             normal_loss_n   += int(normal_mask.sum())
 
-          all_val_scores.extend(error_map_v.cpu().numpy().tolist())
+          all_val_scores.extend(batch_scores.tolist())
           all_val_targets.extend(batch_y.tolist())
       val_loss /= len(val_loader.dataset)
       val_loss_normal = normal_loss_sum / max(normal_loss_n, 1)
