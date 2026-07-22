@@ -212,12 +212,31 @@ def build_transforms(cfg):
     for the "original image" gallery is left untouched so users can still
     see the true original photo regardless of the selected mode.
     """
-    color_mode = getattr(cfg, 'COLOR_MODE', 'rgb')
-    if color_mode == 'grayscale_equalized':
+    color_mode = getattr(cfg, 'COLOR_MODE', 'RGB')
+    if color_mode != 'RGB':
+        # AWARENESS NOTE (this is a conceptual/theoretical
+        # caveat, not something a code patch can fully "fix"): the backbone
+        # (ConvNeXtExtractor) is pretrained on natural RGB ImageNet images.
+        # Converting inputs to grayscale — and especially histogram-equalized
+        # grayscale, which applies an aggressive non-linear contrast remap —
+        # shifts the input texture/intensity statistics away from what the
+        # backbone was pretrained on, even though the tensor is replicated
+        # back to 3 channels so shapes still match. extractor.fit_normalization()
+        # re-fits the *feature* mean/std for this color mode, which corrects
+        # first-order scale/shift but does NOT fine-tune the frozen backbone
+        # weights themselves, so some domain-shift risk remains. This should
+        # be discussed explicitly in the thesis limitations section when
+        # comparing RGB vs grayscale/equalized experiment results.
+        logger.warning(
+            f"COLOR_MODE={color_mode!r}: input images are converted before "
+            f"the ImageNet-pretrained backbone sees them. This is a known "
+            f"domain-shift risk (see Findings 2.10) — interpret color-mode "
+            f"ablation results (e.g. E1/E2/E4/E5/E7/E8) with this in mind.")
+    if color_mode == 'GRAYSCALE_EQUAILAZATION':
         color_step = [GrayscaleEqualize()]
-    elif color_mode == 'grayscale':
+    elif color_mode == 'GRAYSCALE':
         color_step = [Grayscale()]
-    elif color_mode == 'rgb':
+    elif color_mode == 'RGB':
         color_step = []
     else:
         raise ValueError(f"Unknown cfg.COLOR_MODE: {color_mode!r}")
