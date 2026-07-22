@@ -248,6 +248,13 @@ def process_single_heatmap(
 
 
 def aggregate_score(raw_map: np.ndarray, cfg) -> float:
+    # NOTE: no longer called by train_autoencoder() as of the fix for the
+    # train/eval scoring-resolution mismatch (see upsample_and_smooth()).
+    # This aggregated the RAW, native-resolution error map with no upsampling
+    # or Gaussian smoothing, which made val_auroc (model-selection criterion)
+    # inconsistent with the final reported AUC-ROC (which IS upsampled +
+    # smoothed in score_dataset_split). Kept here only for reference /
+    # backward-compatibility with any external script that may still import it.
   if cfg.SCORE_METHOD == 'mean':
     return float(raw_map.mean())
   elif cfg.SCORE_METHOD == 'max':
