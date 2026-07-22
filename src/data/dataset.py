@@ -110,11 +110,21 @@ def scan_directory(directory: str, cfg) -> pd.DataFrame:
         return pd.DataFrame(columns=["path", "filename", "label"])
 
     df = pd.DataFrame(rows)
-    n_unk = df["label"].isna().sum()
+    n_unk = int(df["label"].isna().sum())
     if n_unk:
         logger.warning(f"{directory}: {n_unk} unlabelled/ambiguous files dropped.")
 
-    return df.dropna(subset=["label"]).reset_index(drop=True)
+    clean_df = df.dropna(subset=["label"]).reset_index(drop=True)
+    # Attach drop-count as DataFrame metadata (pandas .attrs) rather than just
+    # logging it, so callers (e.g. scripts/train.py) can surface this number
+    # in final_results.json for a transparent, auditable report of how many
+    # files were excluded from each split and why. .attrs does not affect
+    # indexing/values, so this is fully backward-compatible with existing
+    # callers that only use the returned DataFrame as before.
+    clean_df.attrs["n_scanned"] = len(df)
+    clean_df.attrs["n_dropped_ambiguous_or_unlabelled"] = n_unk
+    clean_df.attrs["source_dir"] = str(directory)
+    return clean_df
 
 
 class AnomalyDataset(Dataset):
@@ -130,6 +140,13 @@ class AnomalyDataset(Dataset):
                                is configured (RGB mode), this equals display_tensor.
     """
 
+    # Hard cap on how many times __getitem__ may fall back to a random
+    # replacement sample before giving up. Without this cap, a batch of
+    # corrupt/unreachable files (e.g. a transient network-drive hiccup on
+    # Google Drive) could recurse arbitrarily deep or silently substitute an
+    # unbounded number of samples with no record of it happening.
+    MAX_LOAD_RETRIES = 5
+
     def __init__(self, df: pd.DataFrame, norm_tf, orig_tf, image_size=(224, 224),
                  preproc_tf=None):
         self.paths = df["path"].tolist()
@@ -139,28 +156,49 @@ class AnomalyDataset(Dataset):
         self.orig_tf = orig_tf
         self.preproc_tf = preproc_tf
         self.image_size = image_size
+        self.n_fallbacks = 0  # running count of successful fallback substitutions
 
     def __len__(self):
         return len(self.paths)
 
-    def __getitem__(self, idx):
+    def _load_one(self, idx):
+        """Load+transform a single sample. Raises on failure (no fallback here)."""
         path = self.paths[idx]
         label = self.labels[idx]
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            ow, oh = img.size
+            norm_t = self.norm_tf(img)
+            orig_t = self.orig_tf(img)
+            preproc_t = self.preproc_tf(img) if self.preproc_tf is not None else orig_t
+        return norm_t, orig_t, preproc_t, path, label, (ow, oh)
 
+    def __getitem__(self, idx):
         try:
-            with Image.open(path) as img:
-                img = img.convert("RGB")
-                ow, oh = img.size
-                norm_t = self.norm_tf(img)
-                orig_t = self.orig_tf(img)
-                preproc_t = self.preproc_tf(img) if self.preproc_tf is not None else orig_t
-
-            return norm_t, orig_t, preproc_t, path, label, (ow, oh)
-
+            return self._load_one(idx)
         except Exception as e:
-            logger.error(f"Load failed {path}: {e}")
+            logger.error(f"Load failed {self.paths[idx]}: {e}")
+
+        # Bounded retry loop (replaces the old unbounded recursive fallback).
+        for attempt in range(self.MAX_LOAD_RETRIES):
             random_idx = random.randint(0, len(self) - 1)
-            return self.__getitem__(random_idx)
+            try:
+                sample = self._load_one(random_idx)
+                self.n_fallbacks += 1
+                logger.warning(
+                    f"Substituted index {idx} -> {random_idx} "
+                    f"(fallback attempt {attempt + 1}/{self.MAX_LOAD_RETRIES}, "
+                    f"total fallbacks so far this run: {self.n_fallbacks})")
+                return sample
+            except Exception as e:
+                logger.error(f"Fallback load also failed {self.paths[random_idx]}: {e}")
+
+        raise RuntimeError(
+            f"AnomalyDataset: failed to load a usable sample for index {idx} "
+            f"after {self.MAX_LOAD_RETRIES} random fallback attempts. "
+            f"Too many corrupt/unreachable files in this split — check the "
+            f"data source (e.g. a dropped network drive) rather than retrying "
+            f"indefinitely.")
 
 
 def build_transforms(cfg):
