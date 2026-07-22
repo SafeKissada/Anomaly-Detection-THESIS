@@ -51,7 +51,40 @@ class EarlyStopping:
     return self.stopped
 
 
+def get_best_epoch(history: Dict, monitor: str) -> int:
+  """Return the index of the epoch that EarlyStopping would consider "best"
+  for the given cfg.AE_MONITOR, using the exact same min/max rule as
+  EarlyStopping itself ('val_auroc' -> max, everything else -> min).
+
+  This is the SINGLE shared definition of "best epoch" used by:
+    - scripts/train.py  (to report best_val_loss / best_val_auroc etc. in
+      final_results.json at the epoch that was actually selected, instead of
+      the global min/max over all epochs which may belong to a different,
+      non-selected epoch)
+    - src/visual.py      (plot_training_history, to draw the "best epoch"
+      marker on the training curves)
+
+  Previously this same 3-line if/elif/else was duplicated inline inside
+  src/visual.py while scripts/train.py used an unrelated (and misleading)
+  `min(history['val_loss'])` over ALL epochs. Factoring it out here removes
+  that duplication and guarantees both call-sites agree on what "best" means.
+  """
+  if monitor == 'val_auroc':
+    return int(np.argmax(history['val_auroc']))
+  elif monitor == 'val_loss_normal':
+    return int(np.argmin(history['val_loss_normal']))
+  else:
+    return int(np.argmin(history['val_loss']))
+
+
 def aggregate_score_torch(error_map: torch.Tensor, cfg) -> torch.Tensor:
+  # NOTE: no longer called by train_autoencoder() as of the fix for the
+  # train/eval scoring-resolution mismatch (see upsample_and_smooth()).
+  # This aggregated the RAW, native-resolution error map with no upsampling
+  # or Gaussian smoothing, which made val_auroc (model-selection criterion)
+  # inconsistent with the final reported AUC-ROC (which IS upsampled +
+  # smoothed in score_dataset_split). Kept here only for reference /
+  # backward-compatibility with any external script that may still import it.
   b = error_map.size(0)
   flat = error_map.reshape(b, -1)
   if cfg.SCORE_METHOD == 'mean':
@@ -128,9 +161,9 @@ def train_autoencoder(
 
           v_loss = criterion(recon, feats)
           val_loss += v_loss.item() * feats.size(0)
-          error_map_raw   = elementwise_error_map(feats, recon, criterion)   # [B] (diagnostic only, unaffected)
-          per_sample_loss = error_map_raw.mean(dim=(1, 2)) # [B] (diagnostic only, unaffected)
-           
+          error_map_raw   = elementwise_error_map(feats, recon, criterion)   # [B, H, W] native resolution
+          per_sample_loss = error_map_raw.mean(dim=(1, 2))                    # [B] (diagnostic only, unaffected)
+
           # IMPORTANT (fix for the train/eval scoring-resolution mismatch):
           # The anomaly score used for val_auroc (which drives EarlyStopping /
           # checkpoint selection via cfg.AE_MONITOR) must be computed with the
@@ -141,8 +174,7 @@ def train_autoencoder(
           # aggregate_score() here instead of aggregate_score_torch() on the
           # raw, native-resolution map. This is done on CPU (cv2/scipy have no
           # GPU batched equivalent) which is slightly slower per epoch, but
-          # only affects the validation pass, not the training forward/backward.                 
-          
+          # only affects the validation pass, not the training forward/backward.
           error_map_raw_np = error_map_raw.detach().cpu().numpy()
           batch_scores = np.empty(error_map_raw_np.shape[0], dtype=np.float32)
           for i in range(error_map_raw_np.shape[0]):
@@ -199,19 +231,20 @@ def train_autoencoder(
     print(f'\n✓ Best autoencoder loaded from {save_path}  (monitor={monitor})')
     return history
 
+
 def upsample_and_smooth(
     err_map  : np.ndarray,
     sigma    : float,
     out_size : Tuple[int, int]
 ) -> np.ndarray:
     """Resize a native-resolution error map up to out_size then Gaussian-smooth it.
- 
+
     This is the SINGLE shared post-processing step between:
       (a) training-time validation scoring (train_autoencoder -> val_auroc,
           used by EarlyStopping to select the checkpoint), and
       (b) final scoring (score_dataset_split -> process_single_heatmap,
           used for the reported test/val/train AUC-ROC, F1, etc.)
- 
+
     Both call-sites MUST route through this exact function (not a
     reimplementation) so that the criterion used to pick the "best" model
     is provably the same criterion used to report its final performance.
@@ -224,6 +257,7 @@ def upsample_and_smooth(
         (out_size[1], out_size[0]),
         interpolation=cv2.INTER_LINEAR)
     return gaussian_filter(score_map_up, sigma=sigma)
+
 
 def process_single_heatmap(
     feat_t       :  torch.Tensor,       # [C, H, W] tensor
@@ -248,13 +282,6 @@ def process_single_heatmap(
 
 
 def aggregate_score(raw_map: np.ndarray, cfg) -> float:
-    # NOTE: no longer called by train_autoencoder() as of the fix for the
-    # train/eval scoring-resolution mismatch (see upsample_and_smooth()).
-    # This aggregated the RAW, native-resolution error map with no upsampling
-    # or Gaussian smoothing, which made val_auroc (model-selection criterion)
-    # inconsistent with the final reported AUC-ROC (which IS upsampled +
-    # smoothed in score_dataset_split). Kept here only for reference /
-    # backward-compatibility with any external script that may still import it.
   if cfg.SCORE_METHOD == 'mean':
     return float(raw_map.mean())
   elif cfg.SCORE_METHOD == 'max':
