@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import precision_recall_curve
 
+from src.engine import get_best_epoch
+
 
 def plot_class_distribution(split_labels: Dict[str, List[str]], cfg) -> str:
     """split_labels: {'Train': [...labels...], 'Validation': [...], 'Test': [...]}"""
@@ -39,12 +41,7 @@ def plot_class_distribution(split_labels: Dict[str, List[str]], cfg) -> str:
 def plot_training_history(history: Dict, cfg) -> str:
     fig, axes = plt.subplots(1, 4, figsize=(24, 5))
     _monitor = cfg.AE_MONITOR
-    if _monitor == 'val_auroc':
-        best_ep = int(np.argmax(history['val_auroc']))
-    elif _monitor == 'val_loss_normal':
-        best_ep = int(np.argmin(history['val_loss_normal']))
-    else:
-        best_ep = int(np.argmin(history['val_loss']))
+    best_ep = get_best_epoch(history, _monitor)
 
     # ── 1. Loss curves ──────────────────────────────────────────────────────
     ax = axes[0]
@@ -434,7 +431,7 @@ def gallery_processed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.Data
 
 
 def gallery_preprocessed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
-    """Gallery: แสดงภาพที่ผ่าน preprocessing จริง  ที่ป้อนเข้าโมเดล
+    """Gallery: แสดงภาพที่ผ่าน preprocessing จริง ๆ ที่ป้อนเข้าโมเดล
     (grayscale หรือ grayscale+equalization) โดยไม่มี heatmap overlay.
     มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'rgb'."""
     return render_image_gallery(df_gallery, split_arrays, cfg, mode='preproc', **kwargs)
