@@ -219,12 +219,7 @@ def process_single_heatmap(
     else:
       err_map = ((feat_t - recon_t) ** 2).mean(dim=0).numpy()
 
-    score_map_up = cv2.resize(
-        err_map,
-        (out_size[1], out_size[0]),
-        interpolation=cv2.INTER_LINEAR)
-
-    raw_map = gaussian_filter(score_map_up, sigma=sigma)
+    raw_map = upsample_and_smooth(err_map, sigma=sigma, out_size=out_size)
 
     s_min, s_max = raw_map.min(), raw_map.max()
     normalized_map = (raw_map - s_min) / ((s_max - s_min) + 1e-8)
