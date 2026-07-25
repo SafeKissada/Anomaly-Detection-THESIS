@@ -68,38 +68,53 @@ def main():
     CFG = Config()
     set_seed(CFG.SEED)
 
+    # NOTE (fix 2.NEW-1/2.NEW-2/2.NEW-3): the two Panel() calls below used to
+    # have COMMAS between what should have been one concatenated multi-line
+    # f-string. Python then parsed each line as a SEPARATE positional argument
+    # to Panel(), but rich.Panel.__init__() only accepts 2-3 positional args
+    # (renderable, box) — so this raised
+    #   TypeError: Panel.__init__() takes from 2 to 3 positional arguments
+    #   but 6 positional arguments (and 1 keyword-only argument) were given
+    # immediately, before main() could do anything else. Fixed by joining
+    # every line into a single string via adjacent string-literal
+    # concatenation (no comma) ending each line with '\n'. Also fixed two
+    # latent bugs that were hiding behind that crash and would have fired
+    # next: mismatched/misspelled rich markup tags ('cran'/'cray' instead of
+    # 'cyan', and an opening tag that didn't match its closing tag — both
+    # raise rich.errors.MarkupError), and CFG.AE_EPOCH (missing the trailing
+    # 'S') which does not exist on Config and would have raised
+    # AttributeError: 'Config' object has no attribute 'AE_EPOCH'.
     console.print(Panel(
         f'Device        : [bold cyan]{CFG.DEVICE}[/bold cyan]\n'
         f'Backbone      : [bold cyan]ConvNeXt-{CFG.BACKBONE.capitalize()}[/bold cyan]\n'
-        f'Color mode    : [bold cyan]{CFG.COLOR_MODE}[/bold cyan]',
-        f'Loss function : [bold cyan]{CFG.LOSS}[/bold cyan]',
-        f'Optimizer     : [bold cran]{CFG.OPTIM}[/bold cyan]',
-        f'Score method  : [bold cray]{CFG.SCORE_METHOD}[/bold cray]',
-        f'AE monitor    : [bold cray]{CFG.SCORE_TOPK_PERCENT}[/bold cray]',
+        f'Color mode    : [bold cyan]{CFG.COLOR_MODE}[/bold cyan]\n'
+        f'Loss function : [bold cyan]{CFG.LOSS}[/bold cyan]\n'
+        f'Optimizer     : [bold cyan]{CFG.OPTIM}[/bold cyan]\n'
+        f'Score method  : [bold cyan]{CFG.SCORE_METHOD}[/bold cyan]\n'
+        f'AE monitor    : [bold cyan]{CFG.SCORE_TOPK_PERCENT}[/bold cyan]',
         title='[bold]BACKBONE[/bold]'
     ))
 
     print('\n')
 
     console.print(Panel(
-        f'SEED          : [bold gray]{CFG.SEED}[/bold gray]',
-        f'IMAGE         : [bold gray]{CFG.IMAGE_SIZE}[/bold gray]',
-        f'BRIGHTNESS    : [bold gray]{CFG.AUG_COLOR_JITTER }[/bold gray]',
-        f'MSE WEIGHT    : [bold gray]{CFG.MSE_WEIGHT}[/bold gray]',
-        f'SSIM WEIGHT   : [bold gray]{CFG.SSIM_WEIGHT}[/bold gray]',
-        f'BATCH SIZE    : [bold gray]{CFG.BATCH_SIZE}[/bold gray]',
-        f'EPOCHS        : [bold gray]{CFG.AE_EPOCH}[/bold gray]',
-        f'LR            : [bold gray]{CFG.AE_LR}[/bold gray]',
-        f'WEIGHT DECAY  : [bold gray]{CFG.AE_WEIGHT_DECAY}[/bold gray]',
-        f'BOTTLENECK    : [bold gray]{CFG.AE_BOTTLENECK_CH} CH[/bold gray]',
-        f'PATIENCE      : [bold gray]{CFG.AE_PATIENCE}[/bold gray]',
-        f'STEP          : [bold gray]{CFG.AE_LR_STEP}[/bold gray]',
-        f'GAMMA         : [bold gray]{CFG.AE_LR_GAMMA}[/bold gray]',
-        f'HEATMAP SIGMA : [bold red]{CFG.HEATMAP_SIGMA}[/bold red]',
-        f'THRESHOLD     : [bold red]{CFG.THRESHOLD_PERCENTILE}%[/bold red]',
+        f'SEED          : [bold white]{CFG.SEED}[/bold white]\n'
+        f'IMAGE         : [bold white]{CFG.IMAGE_SIZE}[/bold white]\n'
+        f'BRIGHTNESS    : [bold white]{CFG.AUG_COLOR_JITTER }[/bold white]\n'
+        f'MSE WEIGHT    : [bold white]{CFG.MSE_WEIGHT}[/bold white]\n'
+        f'SSIM WEIGHT   : [bold white]{CFG.SSIM_WEIGHT}[/bold white]\n'
+        f'BATCH SIZE    : [bold white]{CFG.BATCH_SIZE}[/bold white]\n'
+        f'EPOCHS        : [bold white]{CFG.AE_EPOCHS}[/bold white]\n'
+        f'LR            : [bold white]{CFG.AE_LR}[/bold white]\n'
+        f'WEIGHT DECAY  : [bold white]{CFG.AE_WEIGHT_DECAY}[/bold white]\n'
+        f'BOTTLENECK    : [bold white]{CFG.AE_BOTTLENECK_CH} CH[/bold white]\n'
+        f'PATIENCE      : [bold white]{CFG.AE_PATIENCE}[/bold white]\n'
+        f'STEP          : [bold white]{CFG.AE_LR_STEP}[/bold white]\n'
+        f'GAMMA         : [bold white]{CFG.AE_LR_GAMMA}[/bold white]\n'
+        f'HEATMAP SIGMA : [bold red]{CFG.HEATMAP_SIGMA}[/bold red]\n'
+        f'THRESHOLD     : [bold red]{CFG.THRESHOLD_PERCENTILE}%[/bold red]\n'
         f'TOP-K%        : [bold red]{CFG.SCORE_TOPK_PERCENT}%[/bold red]',
         title='[bold]Parameter[/bold]'
-        
     ))
     # ── Datasets & DataLoaders ────────────────────────────────────────────────
     # Previously this block re-implemented (scan + transforms + dataset +
