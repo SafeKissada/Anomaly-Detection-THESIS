@@ -138,7 +138,26 @@ class FeatureAutoencoder(nn.Module):
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     z = self.encoder(x)
-    return self.decoder(z)
+    recon = self.decoder(z)
+    if recon.shape != x.shape:
+      # The encoder/decoder kernel/stride/padding combination (k4s2p1 x2 +
+      # k3s2p1, mirrored on the decoder side) only reproduces the exact
+      # input spatial size for feature maps whose H and W are divisible by
+      # 8 (true for the default IMAGE_SIZE=224 -> 28x28 ConvNeXt-tiny stage2
+      # feature map, but NOT guaranteed for other IMAGE_SIZE values). Rather
+      # than letting this surface later as a cryptic broadcasting error
+      # inside the loss function, fail immediately here with a clear,
+      # actionable message.
+      raise RuntimeError(
+          f"FeatureAutoencoder: reconstructed shape {tuple(recon.shape)} != "
+          f"input shape {tuple(x.shape)}. This almost always means "
+          f"cfg.IMAGE_SIZE produces a backbone feature map whose spatial "
+          f"size is not evenly divisible by 8 (3 stride-2 downsample "
+          f"stages). Pick an IMAGE_SIZE such that "
+          f"(IMAGE_SIZE / backbone_downsample_factor) is divisible by 8, "
+          f"or reduce the number of downsample stages in "
+          f"ConvEncoderWithCNBlock/ConvDecoderWithCNBlock accordingly.")
+    return recon
 
   def bottleneck(self, x: torch.Tensor) -> torch.Tensor:
     return self.encoder(x)
