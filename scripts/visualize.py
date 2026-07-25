@@ -102,7 +102,7 @@ def main():
             d['paths'], d['orig_imgs'], d['heatmaps'], d['labels'],
             d['scores'], threshold, split_name, CFG, n_samples=20, image_kind='rgb')
 
-        if CFG.COLOR_MODE != 'rgb':
+        if CFG.COLOR_MODE != 'RGB':
             visualize_heatmaps(
                 d['paths'], d['preproc_imgs'], d['heatmaps'], d['labels'],
                 d['scores'], threshold, split_name, CFG, n_samples=20, image_kind='preproc')
@@ -164,7 +164,7 @@ def main():
     # เพิ่ม gallery อีก 2 แบบที่แสดงภาพซึ่งผ่าน preprocessing จริงที่ป้อนเข้าโมเดล:
     #   - gallery_preprocessed_images         : ภาพ preprocessed ล้วน ๆ (ไม่มี overlay)
     #   - gallery_preprocessed_overlay_images : ภาพ preprocessed + heatmap overlay
-    if CFG.COLOR_MODE != 'rgb':
+    if CFG.COLOR_MODE != 'RGB':
         print(f"\nCOLOR_MODE = '{CFG.COLOR_MODE}' → เพิ่ม gallery เวอร์ชัน preprocessed ด้วย")
         for split_name in ['train', 'val', 'test']:
             _ = gallery_preprocessed_images(

@@ -350,7 +350,7 @@ def render_image_gallery(
       'processed'       : RGB photo + heatmap overlay
       'preproc'         : the actual image fed to the model (grayscale /
                           grayscale+equalized) — only meaningful when
-                          cfg.COLOR_MODE != 'rgb'
+                          cfg.COLOR_MODE != 'RGB'
       'preproc_overlay' : preprocessed image + heatmap overlay
     """
     assert mode in _GALLERY_MODE_TITLES, \
@@ -433,13 +433,13 @@ def gallery_processed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.Data
 def gallery_preprocessed_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
     """Gallery: แสดงภาพที่ผ่าน preprocessing จริง ๆ ที่ป้อนเข้าโมเดล
     (grayscale หรือ grayscale+equalization) โดยไม่มี heatmap overlay.
-    มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'rgb'."""
+    มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'RGB'."""
     return render_image_gallery(df_gallery, split_arrays, cfg, mode='preproc', **kwargs)
 
 
 def gallery_preprocessed_overlay_images(df_gallery, split_arrays, cfg, **kwargs) -> pd.DataFrame:
     """Gallery: แสดงภาพที่ผ่าน preprocessing (grayscale/equalized) + heatmap overlay.
-    มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'rgb'."""
+    มีความหมายเฉพาะเมื่อ cfg.COLOR_MODE != 'RGB'."""
     return render_image_gallery(df_gallery, split_arrays, cfg, mode='preproc_overlay', **kwargs)
 
 
