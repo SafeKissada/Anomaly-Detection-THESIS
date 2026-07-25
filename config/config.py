@@ -7,8 +7,55 @@ import numpy as np
 import torch
 
 
+import random
+import re
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Tuple, Optional
+
+import numpy as np
+import torch
+
+
 @dataclass
 class Config:
+  # ── Data layout (NEW: good/defect only, split is computed — see below) ──
+  # DATA_ROOT must contain exactly two subfolders named GOOD_DIRNAME and
+  # DEFECT_DIRNAME (default 'good' and 'defect'). train/val/test are no
+  # longer separate folders on disk — they are computed once by
+  # src.data.dataset.scan_and_split() using SEED + SPLIT_RATIOS below, then
+  # cached to SPLIT_CACHE_PATH so every one of the E0-E8 experiments reuses
+  # the exact same split (required for a fair ablation comparison).
+  DATA_ROOT     : str = "dataset root path (contains good/ and defect/ subfolders)"
+  GOOD_DIRNAME  : str = "good"
+  DEFECT_DIRNAME: str = "defect"
+
+  # train, val, test ratios — must sum to 1.0 (checked in __post_init__)
+  SPLIT_RATIOS  : Tuple[float, float, float] = (0.70, 0.15, 0.15)
+
+  # Where the computed split is cached. Deliberately NOT under SAVE_PATH/
+  # OUTPUT_PATH (which differ per experiment, e.g. Thesis_Result/E0/logs vs
+  # Thesis_Result/E1/logs) so that all 9 experiments (E0-E8) share this one
+  # file and therefore see identical train/val/test membership. Delete this
+  # file manually if you deliberately want to regenerate a new split.
+  SPLIT_CACHE_PATH : str = "splits/split_assignment.csv"
+
+  # Optional: set this if multiple images can belong to the same physical
+  # component/board (e.g. several angles/lighting conditions of one part).
+  # If left as None, splitting is a plain per-class stratified random split
+  # (fine only if each image is an independent, unrelated sample). If set,
+  # it must be a regex with one capture group that extracts a stable group
+  # id from the filename (e.g. r'^(.*?)_\d+\.\w+$' to group
+  # "board007_0.jpg","board007_1.jpg" under group id "board007") — all
+  # images sharing a group id are then kept together in the same split, to
+  # avoid leaking near-duplicate views of the same physical part across
+  # train/val/test.
+  GROUP_ID_REGEX : Optional[str] = None
+
+  # ── Legacy (pre-restructure) fields — kept only for backward
+  # compatibility with older scripts/notebooks that may still reference
+  # them directly. scan_and_split()/build_datasets_and_loaders() no longer
+  # read these; only the legacy scan_directory() helper still does.
   TRAIN_DIR       : str = "train dataset path"
   VAL_DIR         : str = "validation dataset path"
   TEST_DIR        : str = "test dataset path"
@@ -22,7 +69,7 @@ class Config:
   SEED       : int          = 42
   DEVICE     : torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
   EXPERIMENT : str          = 'ConvNeXt_AutoEncoder_Anomaly'
-  # ── Label keywords (filename-based) ─────────────────────────────
+  # ── Label keywords (legacy, filename-based — see scan_directory()) ──────
   NORMAL_KEYWORDS  : Tuple[str, ...] = ('false_call','falsecall','good','normal','false call')
   ANOMALY_KEYWORDS : Tuple[str, ...] = ('defect','anomaly','bad','ng')
   # ── ConvNeXt backbone ───────────────────────────────────────────
@@ -88,6 +135,17 @@ class Config:
   def __post_init__(self):
     for p in [self.SAVE_PATH, self.OUTPUT_PATH]:
       Path(p).mkdir(parents=True, exist_ok=True)
+
+    ratio_sum = sum(self.SPLIT_RATIOS)
+    if not np.isclose(ratio_sum, 1.0, atol=1e-6):
+      raise ValueError(
+          f"Config.SPLIT_RATIOS must sum to 1.0, got {self.SPLIT_RATIOS} "
+          f"(sums to {ratio_sum}). This is checked eagerly here rather than "
+          f"left to silently produce a smaller-or-overlapping split later.")
+    if len(self.SPLIT_RATIOS) != 3:
+      raise ValueError(
+          f"Config.SPLIT_RATIOS must have exactly 3 values (train, val, "
+          f"test), got {len(self.SPLIT_RATIOS)}: {self.SPLIT_RATIOS}")
 
 
 def set_seed(seed: int = 42):
