@@ -4,6 +4,7 @@ the AnomalyDataset, image transforms, and DataLoader factory.
 """
 import logging
 import random
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -86,7 +87,16 @@ def infer_label_from_filename(filename: str, cfg) -> Optional[str]:
 
 
 def scan_directory(directory: str, cfg) -> pd.DataFrame:
-    """Recursively scan `directory` for valid images and label them."""
+    """[LEGACY] Recursively scan `directory` for valid images and label them
+    by guessing from filename keywords (cfg.NORMAL_KEYWORDS / cfg.ANOMALY_KEYWORDS).
+
+    Kept only for backward compatibility with the old train/val/test-folders-
+    on-disk layout. New code should prefer scan_and_split(), which reads
+    labels directly from a good/ vs defect/ folder name (no keyword
+    guessing, no ambiguous-label files silently dropped) and computes a
+    reproducible, cached, seed-based train/val/test split instead of
+    requiring the split to already exist as separate folders on disk.
+    """
     d = Path(directory)
     if not d.exists():
         raise FileNotFoundError(f"Not found: {directory}")
@@ -125,6 +135,160 @@ def scan_directory(directory: str, cfg) -> pd.DataFrame:
     clean_df.attrs["n_dropped_ambiguous_or_unlabelled"] = n_unk
     clean_df.attrs["source_dir"] = str(directory)
     return clean_df
+
+
+def _list_labeled_files(cfg) -> pd.DataFrame:
+    """Scan cfg.DATA_ROOT/{cfg.GOOD_DIRNAME, cfg.DEFECT_DIRNAME}. Label comes
+    directly from which of the two folders a file is under — no filename
+    keyword guessing, so there is no "ambiguous keyword" case to drop
+    (removes the class of bugs described in the fix log under 2.8/2.9).
+    """
+    root = Path(cfg.DATA_ROOT)
+    rows = []
+    for label, dirname in [("normal", cfg.GOOD_DIRNAME), ("anomaly", cfg.DEFECT_DIRNAME)]:
+        d = root / dirname
+        if not d.exists():
+            raise FileNotFoundError(
+                f"Expected folder not found: {d}. cfg.DATA_ROOT must contain "
+                f"exactly two subfolders: cfg.GOOD_DIRNAME ({cfg.GOOD_DIRNAME!r}) "
+                f"and cfg.DEFECT_DIRNAME ({cfg.DEFECT_DIRNAME!r}).")
+        files = sorted(
+            f for f in d.rglob("*")
+            if f.is_file() and f.suffix.lower() in cfg.VALID_EXT
+        )
+        if not files:
+            logger.warning(f"No valid image files found under {d}")
+        for f in files:
+            rows.append({"path": str(f), "filename": f.name, "label": label})
+
+    if not rows:
+        raise FileNotFoundError(
+            f"No valid image files found under {root}/{{{cfg.GOOD_DIRNAME},"
+            f"{cfg.DEFECT_DIRNAME}}}")
+
+    df = pd.DataFrame(rows)
+    # Sort by path BEFORE anything else. glob/rglob/os.listdir order is not
+    # guaranteed to be stable across OS/filesystem, so relying on it (even
+    # combined with a fixed seed) can silently produce a different split on
+    # a different machine. Sorting first makes the subsequent seeded shuffle
+    # fully deterministic regardless of platform.
+    df = df.sort_values("path", kind="stable").reset_index(drop=True)
+
+    if cfg.GROUP_ID_REGEX:
+        # Group multiple images of the same physical part/board together so
+        # they cannot be split across train/val/test (prevents a form of
+        # data leakage where the model implicitly "recognizes" a specific
+        # part it has already seen a different photo of during training).
+        pattern = re.compile(cfg.GROUP_ID_REGEX)
+        def _extract_group_id(fn):
+            m = pattern.match(fn)
+            if not m:
+                raise ValueError(
+                    f"GROUP_ID_REGEX {cfg.GROUP_ID_REGEX!r} did not match "
+                    f"filename {fn!r}. Every filename under DATA_ROOT must "
+                    f"match this pattern, or set GROUP_ID_REGEX=None to "
+                    f"split per-file instead of per-group.")
+            return m.group(1)
+        df["group_id"] = df["filename"].apply(_extract_group_id)
+    else:
+        # No grouping requested: every file is its own group, equivalent to
+        # a plain per-file stratified split.
+        df["group_id"] = df["path"]
+
+    return df
+
+
+def _stratified_group_split(df: pd.DataFrame, ratios, seed: int) -> pd.DataFrame:
+    """Assign each row of `df` (must have 'label' and 'group_id' columns) to
+    'train' / 'val' / 'test', stratified independently within each label so
+    class balance is preserved in every split, and keeping every group_id
+    entirely inside a single split (see GROUP_ID_REGEX above).
+    """
+    rng = np.random.RandomState(seed)
+    train_r, val_r, _test_r = ratios
+    assigned = {}
+
+    for label, sub in df.groupby("label"):
+        group_ids = sorted(sub["group_id"].unique())  # deterministic order first
+        rng.shuffle(group_ids)                         # then seeded shuffle
+        n = len(group_ids)
+        n_train = int(round(n * train_r))
+        n_val = int(round(n * val_r))
+        # Remainder goes to test — guarantees every group is assigned
+        # exactly once (no dropped/duplicated groups from rounding).
+        for gid in group_ids[:n_train]:
+            assigned[gid] = "train"
+        for gid in group_ids[n_train:n_train + n_val]:
+            assigned[gid] = "val"
+        for gid in group_ids[n_train + n_val:]:
+            assigned[gid] = "test"
+
+    out = df.copy()
+    out["split"] = out["group_id"].map(assigned)
+    return out
+
+
+def scan_and_split(cfg) -> dict:
+    """Build the train/val/test DataFrames from cfg.DATA_ROOT/{good,defect},
+    using a seed-based stratified split that is cached at cfg.SPLIT_CACHE_PATH.
+
+    Replaces the older workflow of manually pre-sorting images into separate
+    train/, val/, test/ folders on disk. Advantages:
+      - label comes directly from the good/ vs defect/ folder name, not from
+        guessing keywords in the filename -> removes the "ambiguous label,
+        silently dropped" class of bugs entirely (no keyword parsing at all).
+      - the split is reproducible from one seed + one ratio tuple in config
+        -> documentable in a single sentence in the Methodology chapter,
+        instead of an undocumented manual folder arrangement.
+      - the split is CACHED to cfg.SPLIT_CACHE_PATH the first time it is
+        computed. Every subsequent call — including from a different one of
+        the E0-E8 ablation experiments — reuses that exact cached split, so
+        all experiments are compared on identical train/val/test membership
+        (otherwise the split itself would be an uncontrolled confound
+        between experiments).
+
+    Returns {'train': df, 'val': df, 'test': df}, each with columns
+    path/filename/label — schema-compatible with the legacy
+    scan_directory() output, so build_datasets_and_loaders() and everything
+    downstream needs no further changes.
+    """
+    cache_path = Path(cfg.SPLIT_CACHE_PATH)
+
+    if cache_path.exists():
+        logger.info(f"Loading cached split assignment from {cache_path}")
+        full_df = pd.read_csv(cache_path)
+        missing = [p for p in full_df["path"] if not Path(p).exists()]
+        if missing:
+            logger.warning(
+                f"{len(missing)} path(s) listed in the cached split no "
+                f"longer exist on disk (e.g. {missing[0]!r}). The cached "
+                f"split may be stale relative to the current contents of "
+                f"{cfg.DATA_ROOT}. Delete {cache_path} to force recomputing "
+                f"the split if you have added/removed images.")
+    else:
+        logger.info(f"No cached split at {cache_path} — computing a new one "
+                    f"(seed={cfg.SEED}, ratios={cfg.SPLIT_RATIOS}).")
+        raw_df = _list_labeled_files(cfg)
+        full_df = _stratified_group_split(raw_df, cfg.SPLIT_RATIOS, cfg.SEED)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        full_df.to_csv(cache_path, index=False)
+        logger.info(f"Saved split assignment ({len(full_df)} files) to {cache_path}")
+
+    result = {}
+    for split_name in ["train", "val", "test"]:
+        split_df = (full_df[full_df["split"] == split_name]
+                    [["path", "filename", "label"]].reset_index(drop=True))
+        # Same .attrs contract as the legacy scan_directory(), for anything
+        # downstream (e.g. scripts/train.py) that reads these fields — always
+        # 0 dropped here since label ambiguity is no longer possible.
+        split_df.attrs["n_scanned"] = len(split_df)
+        split_df.attrs["n_dropped_ambiguous_or_unlabelled"] = 0
+        split_df.attrs["source_dir"] = str(cfg.DATA_ROOT)
+        logger.info(f"[{split_name:5}] total={len(split_df):,}  "
+                    f"{split_df['label'].value_counts().to_dict()}")
+        result[split_name] = split_df
+
+    return result
 
 
 class AnomalyDataset(Dataset):
@@ -293,11 +457,12 @@ def make_loader(ds, cfg, shuffle: bool = False) -> DataLoader:
 
 
 def build_datasets_and_loaders(cfg):
-    """Scan train/val/test dirs, build datasets and dataloaders (including the
-    normal-only loader used to train the autoencoder)."""
-    df_train = scan_directory(cfg.TRAIN_DIR, cfg)
-    df_val = scan_directory(cfg.VAL_DIR, cfg)
-    df_test = scan_directory(cfg.TEST_DIR, cfg)
+    """Build train/val/test datasets and dataloaders (including the
+    normal-only loader used to train the autoencoder) from
+    cfg.DATA_ROOT/{good,defect}, via a cached, seed-based, stratified split
+    (see scan_and_split())."""
+    split = scan_and_split(cfg)
+    df_train, df_val, df_test = split["train"], split["val"], split["test"]
 
     imagenet_tf, train_aug_tf, display_tf, preproc_display_tf = build_transforms(cfg)
 
