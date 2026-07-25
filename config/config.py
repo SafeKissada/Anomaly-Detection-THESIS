@@ -79,7 +79,7 @@ class Config:
   def COLOR_MODE(self) -> str:
     """โหมดปรับ Image Processing."""
     if self.USE_GRAYSCALE_EQUALIZATION:
-      return 'GRAYSCALE_EQUAILAZATION'
+      return 'GRAYSCALE_EQUALIZATION'
     elif self.USE_GRAYSCALE:
       return 'GRAYSCALE'
     else:

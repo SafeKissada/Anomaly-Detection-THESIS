@@ -232,7 +232,7 @@ def build_transforms(cfg):
             f"the ImageNet-pretrained backbone sees them. This is a known "
             f"domain-shift risk (see Findings 2.10) — interpret color-mode "
             f"ablation results (e.g. E1/E2/E4/E5/E7/E8) with this in mind.")
-    if color_mode == 'GRAYSCALE_EQUAILAZATION':
+    if color_mode == 'GRAYSCALE_EQUALIZATION':
         color_step = [GrayscaleEqualize()]
     elif color_mode == 'GRAYSCALE':
         color_step = [Grayscale()]
