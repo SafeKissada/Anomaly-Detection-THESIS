@@ -1,0 +1,1019 @@
+================================================================================
+บันทึกการแก้ไขโค้ดฉบับสมบูรณ์ (FULL FIX LOG)
+ConvNeXt Feature-Space Autoencoder — SafeKissada/__Thesis__
+วันที่แก้ไข: 23 กรกฎาคม 2026
+ครอบคลุม: ทุกหัวข้อในส่วนที่ 2 ของ Thesis_Analysis_Report.txt (2.1 ถึง 2.12)
+================================================================================
+
+สถานะสรุป: แก้ไขแล้วครบ 12/12 หัวข้อ (10 หัวข้อเป็นการแก้บั๊กด้วยโค้ดโดยตรง,
+2 หัวข้อ [2.7, 2.10] เป็นข้อจำกัดเชิงออกแบบ/ทฤษฎีที่ "แก้ให้หายขาดด้วยโค้ด
+ไม่ได้" แต่ได้เพิ่มกลไก diagnostic/awareness ที่เป็นรูปธรรมแทน)
+
+สารบัญ
+  2.1  SSIM ใช้ผิดสมมติฐานทางคณิตศาสตร์                         [src/losses.py]
+  2.2  Notebook config cell เป็น dead code + path ผิด            [Colab_running.ipynb]
+  2.3  เกณฑ์เลือกโมเดล vs เกณฑ์รายงานผลคนละ resolution           [src/engine.py]
+  2.4  best_val_loss ไม่ตรงกับ checkpoint ที่เลือกจริง            [src/engine.py, scripts/train.py]
+  2.5  config.py มีบล็อกซ้ำซ้อนทั้งหมด                            [config/config.py]
+  2.6  Dataset loader ซ้ำซ้อนระหว่างสองไฟล์                      [scripts/train.py]
+  2.7  Bottleneck 4×4 ทำให้ heatmap หยาบ (ข้อจำกัดเชิงออกแบบ)     [scripts/train.py]
+  2.8  ไม่รายงานจำนวนไฟล์ label กำกวมที่ถูก drop                  [src/data/dataset.py, scripts/train.py]
+  2.9  Exception handling อาจ recurse ไม่จำกัด                    [src/data/dataset.py]
+  2.10 Grayscale/Equalize อาจทำให้เกิด domain shift (ข้อจำกัดเชิงทฤษฎี) [src/data/dataset.py]
+  2.11 Docstring อ้างชื่อไฟล์ตัวเองผิด                             [scripts/ssim_check.py]
+  2.12 สมการมิติ Encoder/Decoder เปราะบางนอก default config       [src/model/autoencoder.py]
+
+
+================================================================================
+2.1 SSIM ใช้ผิดสมมติฐานทางคณิตศาสตร์ (mismatched dynamic range)
+    ไฟล์ที่แก้: src/losses.py — class SSIMLoss     |     สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+สูตร SSIM ดั้งเดิม (Wang, Bovik, Sheikh, Simoncelli, 2004, IEEE TIP) สมมติว่า
+x, y คือค่าความสว่างของภาพที่เป็นบวก อยู่ใน dynamic range คงที่ (เช่น [0,1])
+ค่าคงที่ C1=(K1*L)^2, C2=(K2*L)^2 ถูกออกแบบมาให้เสถียรกับ dynamic range นั้น
+แต่โค้ดนี้คำนวณ SSIM บน feature ที่ z-score normalize แล้ว (mean~0 ติดลบได้)
+ทำให้ C1=0.0001, C2=0.0009 ที่ hardcode ไว้ไม่มีความหมายอ้างอิงกับสเกลจริงของ
+ข้อมูลอีกต่อไป
+
+--------------------------------------------------------------------------------
+เหตุผลเชิงทฤษฎีที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+เงื่อนไขที่ต้องคงไว้เพื่อให้สูตร SSIM ใช้ได้ตามทฤษฎี คือ "ข้อมูลนำเข้าต้องอยู่ใน
+dynamic range ที่รู้ค่าแน่นอนและเป็นบวก" วิธีแก้ที่เลือกใช้คือ rescale x, y ให้อยู่
+ในช่วง [0,1] แบบ dynamic ต่อ batch ก่อนเข้าสูตร โดยคำนวณ min/max ของ x กับ y
+"ร่วมกัน" (joint range) ต่อ sample แล้ว affine-transform ทั้งคู่ด้วยค่าเดียวกัน
+เพื่อรักษาความสัมพันธ์เชิงสัมพัทธ์ระหว่าง x กับ y ไว้ทุกประการ เมื่อข้อมูลอยู่ใน
+[0,1] จริงแล้ว ค่าคงที่ C1=0.01^2, C2=0.03^2 มาตรฐานก็กลับมาใช้ได้ตรงตามทฤษฎี
+ต้นฉบับทันที โดยไม่ต้องเดาค่า dynamic range L เอง ค่า min/max ที่ใช้ rescale ถูก
+detach() ออกจาก computational graph เพื่อไม่ให้มันกลายเป็นพารามิเตอร์ที่เรียนรู้ได้
+โดยไม่ตั้งใจ
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข
+--------------------------------------------------------------------------------
+  def _ssim_map(self, x, y):
+    c = x.shape[1]
+    window = self.window.to(device=x.device, dtype=x.dtype).expand(c, 1, self.window_size, self.window_size)
+    pad = self.window_size // 2
+
+    mu_x = F.conv2d(x, window, padding=pad, groups=c)
+    mu_y = F.conv2d(y, window, padding=pad, groups=c)
+    mu_x2, mu_y2, mu_xy = mu_x * mu_x, mu_y * mu_y, mu_x * mu_y
+
+    sigma_x2 = F.conv2d(x * x, window, padding=pad, groups=c) - mu_x2
+    sigma_y2 = F.conv2d(y * y, window, padding=pad, groups=c) - mu_y2
+    sigma_xy = F.conv2d(x * y, window, padding=pad, groups=c) - mu_xy
+
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+               ((mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2) + 1e-12)
+    return ssim_map
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข
+--------------------------------------------------------------------------------
+  def _rescale_to_unit_range(self, x, y):
+    # SSIM's C1/C2 constants assume inputs live in a known, bounded, positive
+    # dynamic range (classically [0, 1] for image intensities). Here x/y are
+    # z-score normalized deep features (mean ~0, unbounded sign), so C1/C2
+    # have no meaningful reference scale unless we first map both tensors
+    # into a shared [0, 1] range. We compute a joint min/max per-sample
+    # (over channel+spatial dims, shared between recon & target so the
+    # relative difference between them is preserved) and detach it so it
+    # behaves as a fixed rescaling constant rather than a learnable scale.
+    with torch.no_grad():
+      flat = torch.cat([x, y], dim=1)
+      dims = tuple(range(1, flat.dim()))
+      lo = flat.amin(dim=dims, keepdim=True)
+      hi = flat.amax(dim=dims, keepdim=True)
+      data_range = (hi - lo).clamp(min=1e-6)
+    x01 = ((x - lo) / data_range).clamp(0.0, 1.0)
+    y01 = ((y - lo) / data_range).clamp(0.0, 1.0)
+    return x01, y01
+
+  def _ssim_map(self, x, y):
+    x, y = self._rescale_to_unit_range(x, y)
+    c = x.shape[1]
+    window = self.window.to(device=x.device, dtype=x.dtype).expand(c, 1, self.window_size, self.window_size)
+    pad = self.window_size // 2
+
+    mu_x = F.conv2d(x, window, padding=pad, groups=c)
+    mu_y = F.conv2d(y, window, padding=pad, groups=c)
+    mu_x2, mu_y2, mu_xy = mu_x * mu_x, mu_y * mu_y, mu_x * mu_y
+
+    sigma_x2 = F.conv2d(x * x, window, padding=pad, groups=c) - mu_x2
+    sigma_y2 = F.conv2d(y * y, window, padding=pad, groups=c) - mu_y2
+    sigma_xy = F.conv2d(x * y, window, padding=pad, groups=c) - mu_xy
+
+    # Now that x, y are genuinely in [0, 1], the standard Wang et al. (2004)
+    # constants (K1=0.01, K2=0.03, L=1) are valid again.
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+               ((mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2) + 1e-12)
+    return ssim_map
+
+--------------------------------------------------------------------------------
+ผลการทดสอบยืนยัน
+--------------------------------------------------------------------------------
+  input เหมือนกันเป๊ะ            -> loss = 0.0
+  noise_std=0.0 -> loss=0.00000    noise_std=0.6 -> loss=0.05393
+  noise_std=0.1 -> loss=0.00173    noise_std=1.0 -> loss=0.12554
+  noise_std=0.3 -> loss=0.01439    noise_std=2.0 -> loss=0.28018
+  (เพิ่มขึ้นแบบ monotonic ตลอด ไม่มี NaN/Inf)
+  CombinedLoss(alpha=0.5,beta=0.5): identical=0.0, noisy(std=0.5)=0.1428726
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : src/losses.py ไฟล์เดียว | ไม่ต้องแก้ engine.py/train.py/visualize.py
+  ผลต่อ MSE ล้วน (E0,E1,E2) : ไม่กระทบ | ผลต่อ SSIM/SSIM+MSE (E3-E8) : ต้องรันใหม่
+
+
+================================================================================
+2.2 Notebook config cell เป็น dead code + path ผิด
+    ไฟล์ที่แก้: Colab_running.ipynb     |     สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+พบว่ามีเพียง 3 จาก 9 experiment (E0, E3, E4) ที่มี cell ตั้งค่า config เลย ส่วน
+E1, E2, E5, E6, E7, E8 ไม่มี cell ตั้งค่าใด ๆ ในโน้ตบุ๊กเลย และทั้ง 3 cell ที่มี
+(E0, E3, E4) ก็เป็น "bare statement" ระดับ module ธรรมดา เช่น
+    TRAIN_DIR : str = "/content/drive/.../train_anomaly3"
+    SAVE_PATH : str = '/content/drive/MyDrive/Thesis_Result/E0/logs'
+ซึ่งแค่สร้างตัวแปร local ในหน่วยความจำของ Colab เท่านั้น "ไม่มีผลใด ๆ" ต่อ
+Config dataclass ที่ scripts/train.py import มาใช้จริง (from config.config
+import Config; CFG = Config() อ่านจากไฟล์ config/config.py ตรง ๆ เสมอ) นอกจาก
+นี้ยังพบ copy-paste error ชัดเจน: cell ของ "E4 Grayscale SSIM+MSE" ตั้งค่า
+SAVE_PATH/OUTPUT_PATH ชี้ไปที่โฟลเดอร์ ".../E1/..." แทนที่จะเป็น E4
+
+--------------------------------------------------------------------------------
+เหตุผลเชิงทฤษฎีที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+หลักการ reproducibility ของงานวิจัยเชิงทดลอง (experimental reproducibility)
+กำหนดว่า artifact ที่ใช้ควบคุมการทดลอง (ในที่นี้คือ notebook) ต้องเป็น
+"single source of truth" ที่พิสูจน์ได้ว่าค่าที่แสดงในเอกสารตรงกับค่าที่ระบบ
+ใช้จริง ไม่ใช่แค่ "ดูเหมือนจะตั้งค่าถูก" วิธีแก้คือเปลี่ยนจาก bare statement
+(ซึ่งพิสูจน์อะไรไม่ได้) เป็นฟังก์ชันที่ (1) เขียนทับไฟล์ config/config.py จริง
+บนดิสก์ (2) reload โมดูลแล้วอ่านค่ากลับมาจาก Config() ตัวเดียวกับที่ train.py
+จะใช้ (3) print ค่าที่อ่านได้ออกมาให้ตรวจสอบด้วยตา และ (4) assert ว่าค่าที่เขียน
+กับค่าที่อ่านกลับมาตรงกัน เพื่อให้ล้มเหลวทันทีถ้ามีอะไรผิดพลาด แทนที่จะรันไป
+เงียบ ๆ ด้วยค่าที่ผิด
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข (ตัวอย่าง cell ของ E4 ที่มี copy-paste bug)
+--------------------------------------------------------------------------------
+  # --- Markdown: "# E4 Grayscale SSIM + MSE" ---
+  TRAIN_DIR       : str = "/content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3/train_anomaly3"
+  VAL_DIR         : str = "/content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3/val_anomaly3"
+  TEST_DIR        : str = "/content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3/test_anomaly3"
+
+  SAVE_PATH   : str = '/content/drive/MyDrive/Thesis_Result/E1/logs'      # <- ผิด! ควรเป็น E4
+  OUTPUT_PATH : str = '/content/drive/MyDrive/Thesis_Result/E1/visual'   # <- ผิด! ควรเป็น E4
+
+  (cell นี้เป็น bare statement เฉย ๆ ไม่มีผลต่อ Config dataclass เลยไม่ว่าจะ
+   เขียน path ถูกหรือผิดก็ตาม)
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข
+--------------------------------------------------------------------------------
+--- Cell ใหม่ (แทรกหลัง "!git branch"): นิยามฟังก์ชัน configure_experiment() ---
+
+  import re, importlib, sys
+
+  # --- FIX for Findings 2.2 -----------------------------------------------
+  # The old per-experiment cells below (previously just bare statements like
+  # `TRAIN_DIR : str = "..."`) were DEAD CODE: they only created local
+  # variables in this notebook's namespace and had ZERO effect on the actual
+  # Config dataclass that scripts/train.py imports and instantiates. Every
+  # experiment E0-E8 therefore silently ran with whatever config/config.py
+  # happened to contain at checkout time, not the paths shown in the notebook.
+  # One of those dead cells (E4) also had a copy-paste bug pointing its
+  # SAVE_PATH/OUTPUT_PATH at the E1 result folder instead of E4's.
+  #
+  # configure_experiment() below REALLY rewrites config/config.py on disk
+  # (via regex replace) and then reloads + prints back the values Config()
+  # will actually use, so the printed paths are provably what scripts/train.py
+  # will read next -- not just notebook-local variables that look right.
+  # --------------------------------------------------------------------------
+
+  BASE_DIR   = "/content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3"
+  RESULT_DIR = "/content/drive/MyDrive/Thesis_Result"
+  CONFIG_PATH = "config/config.py"
+
+  def configure_experiment(exp_name, use_grayscale, use_grayscale_eq, loss):
+      with open(CONFIG_PATH, encoding="utf-8") as f:
+          text = f.read()
+
+      replacements = {
+          "TRAIN_DIR":   f"{BASE_DIR}/train_anomaly3",
+          "VAL_DIR":     f"{BASE_DIR}/val_anomaly3",
+          "TEST_DIR":    f"{BASE_DIR}/test_anomaly3",
+          "SAVE_PATH":   f"{RESULT_DIR}/{exp_name}/logs",
+          "OUTPUT_PATH": f"{RESULT_DIR}/{exp_name}/visual",
+      }
+      for field, value in replacements.items():
+          text, n = re.subn(
+              rf'({field}\s*:\s*str\s*=\s*)([\'\"]).*?\2',
+              lambda m: f'{m.group(1)}{m.group(2)}{value}{m.group(2)}',
+              text)
+          assert n == 1, f"expected exactly 1 match for {field}, got {n}"
+
+      text, n = re.subn(r'(USE_GRAYSCALE\s*:\s*bool\s*=\s*)\w+', rf'\g<1>{use_grayscale}', text)
+      assert n == 1
+      text, n = re.subn(r'(USE_GRAYSCALE_EQUALIZATION\s*:\s*bool\s*=\s*)\w+', rf'\g<1>{use_grayscale_eq}', text)
+      assert n == 1
+      text, n = re.subn(r'(LOSS\s*:\s*str\s*=\s*)([\'\"]).*?\2', lambda m: f'{m.group(1)}{m.group(2)}{loss}{m.group(2)}', text)
+      assert n == 1
+
+      with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+          f.write(text)
+
+      sys.path.insert(0, ".")
+      if "config.config" in sys.modules:
+          importlib.reload(sys.modules["config.config"])
+      from config.config import Config
+      cfg = Config()
+
+      print(f"[{exp_name}] TRAIN_DIR   = {cfg.TRAIN_DIR}")
+      print(f"[{exp_name}] SAVE_PATH   = {cfg.SAVE_PATH}")
+      print(f"[{exp_name}] OUTPUT_PATH = {cfg.OUTPUT_PATH}")
+      print(f"[{exp_name}] COLOR_MODE  = {cfg.COLOR_MODE}")
+      print(f"[{exp_name}] LOSS        = {cfg.LOSS}")
+
+      assert cfg.SAVE_PATH   == replacements["SAVE_PATH"],   "SAVE_PATH did not update"
+      assert cfg.OUTPUT_PATH == replacements["OUTPUT_PATH"], "OUTPUT_PATH did not update"
+      return cfg
+
+--- Cell ของแต่ละ experiment ถูกแทนที่ด้วยการเรียกฟังก์ชันจริง (แก้ path bug
+    ของ E4 ในตัวไปด้วย และเพิ่ม cell ที่ขาดหายไปให้ E1,E2,E5,E6,E7,E8) ---
+
+  configure_experiment('E0', use_grayscale=False, use_grayscale_eq=False, loss='MSE')
+  configure_experiment('E1', use_grayscale=True,  use_grayscale_eq=False, loss='MSE')
+  configure_experiment('E2', use_grayscale=False, use_grayscale_eq=True,  loss='MSE')
+  configure_experiment('E3', use_grayscale=False, use_grayscale_eq=False, loss='SSIM_MSE')
+  configure_experiment('E4', use_grayscale=True,  use_grayscale_eq=False, loss='SSIM_MSE')  # แก้ path แล้ว
+  configure_experiment('E5', use_grayscale=False, use_grayscale_eq=True,  loss='SSIM_MSE')
+  configure_experiment('E6', use_grayscale=False, use_grayscale_eq=False, loss='SSIM')
+  configure_experiment('E7', use_grayscale=True,  use_grayscale_eq=False, loss='SSIM')
+  configure_experiment('E8', use_grayscale=False, use_grayscale_eq=True,  loss='SSIM')
+
+--------------------------------------------------------------------------------
+ผลการทดสอบยืนยัน
+--------------------------------------------------------------------------------
+  รัน configure_experiment('E0', ...) จริงบน config/config.py จริงของ repo:
+    [E0] TRAIN_DIR   = /content/drive/MyDrive/Thesis/DATASET/ชุดที่3/Anomaly3/train_anomaly3
+    [E0] SAVE_PATH   = /content/drive/MyDrive/Thesis_Result/E0/logs
+    [E0] OUTPUT_PATH = /content/drive/MyDrive/Thesis_Result/E0/visual
+    [E0] COLOR_MODE  = rgb
+    [E0] LOSS        = MSE
+  diff ของ config.py ก่อน/หลัง ยืนยันว่าไฟล์ถูกเขียนทับจริง (TRAIN_DIR จาก
+  placeholder "train dataset path" กลายเป็น path จริง)
+
+  รัน configure_experiment('E4', ...) เพื่อยืนยันว่า path bug ถูกแก้แล้ว:
+    [E4] SAVE_PATH   = /content/drive/MyDrive/Thesis_Result/E4/logs      <- ถูกต้องแล้ว (เดิมคือ E1)
+    [E4] OUTPUT_PATH = /content/drive/MyDrive/Thesis_Result/E4/visual   <- ถูกต้องแล้ว (เดิมคือ E1)
+    [E4] COLOR_MODE  = grayscale
+    [E4] LOSS        = SSIM_MSE
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : Colab_running.ipynb ไฟล์เดียว (เพิ่ม 7 cell ใหม่: 1 cell นิยาม
+  ฟังก์ชัน + 6 cell เรียกใช้สำหรับ E1,E2,E5,E6,E7,E8 ที่ขาดหายไปเดิม, แก้ไข
+  3 cell เดิมของ E0,E3,E4 ให้เป็นการเรียกฟังก์ชันจริงแทน bare statement)
+  จำนวน cell ทั้งหมด: 43 -> 50 cell
+  ผลกระทบ: ตอนนี้ทุก experiment (E0-E8) มีกลไกตั้งค่าที่พิสูจน์ได้แล้วว่าใช้งาน
+  จริง ไม่มี experiment ไหนพึ่งพา manual edit นอกโน้ตบุ๊กอีกต่อไป และ path
+  ของทุก experiment จะไม่ชนกันเพราะสร้างจาก exp_name โดยตรง
+
+
+================================================================================
+2.3 เกณฑ์เลือกโมเดล vs เกณฑ์รายงานผลคนละ resolution
+    ไฟล์ที่แก้: src/engine.py     |     สถานะ: แก้ไขแล้ว
+================================================================================
+(รายละเอียดเต็มอยู่ใน Fix_Log_2.1_SSIM_and_2.3_Scoring_Consistency.txt ที่ส่ง
+ให้ก่อนหน้านี้ — สรุปย่อไว้ที่นี่เพื่อความครบถ้วนของเอกสารฉบับนี้)
+
+ปัญหาเดิม: val_auroc ตอนเทรน (train_autoencoder) คำนวณบน error map ขนาดดิบ
+ไม่ upsample ไม่ smooth แต่ AUC-ROC ตอนรายงานผลจริง (score_dataset_split)
+คำนวณบน error map ที่ upsample เป็น IMAGE_SIZE แล้ว Gaussian smooth — สอง
+เกณฑ์นี้ไม่ตรงกัน ทำให้ EarlyStopping อาจเลือก checkpoint ที่ไม่ใช่ตัวที่ดีที่สุด
+จริงเมื่อวัดด้วย pipeline การให้คะแนนจริง
+
+เหตุผลเชิงทฤษฎี: validation criterion ต้องเป็นตัวประมาณที่ไม่เอนเอียงของ
+evaluation criterion (model-selection theory) — resize และ Gaussian blur เป็น
+การแปลงแบบไม่เชิงเส้นต่อการจัดอันดับเชิงพื้นที่ ทำให้อันดับภาพจาก raw score กับ
+smoothed score ไม่จำเป็นต้องตรงกัน
+
+โค้ดที่แก้: เพิ่ม upsample_and_smooth() เป็นฟังก์ชันกลางใน src/engine.py ให้ทั้ง
+process_single_heatmap() (ใช้ตอน evaluation) และ validation loop ใน
+train_autoencoder() (ใช้ตอนเทรน) เรียกร่วมกันเป๊ะ ๆ แทนที่ aggregate_score_torch()
+เดิมที่คำนวณบนขนาดดิบ (aggregate_score_torch() กลายเป็น dead code หลังแก้ไข)
+
+ผลทดสอบยืนยัน: คำนวณ score จาก feature/recon คู่เดียวกันผ่านสองเส้นทาง (training
+path vs evaluation path) ได้ค่าตรงกันเป๊ะ = 0.13998858630657196 ทั้งคู่
+
+อิมแพค: แก้ src/engine.py ไฟล์เดียว, val_auroc ที่ log จะเปลี่ยนจากเดิม (ถูกต้อง
+ขึ้น) -> ต้องรัน E0-E8 ใหม่ทั้งหมดถ้าจะใช้ตัวเลขจากเวอร์ชันนี้
+
+
+================================================================================
+2.4 best_val_loss ไม่ตรงกับ checkpoint ที่เลือกจริง
+    ไฟล์ที่แก้: src/engine.py, scripts/train.py, src/visual.py   |  สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+  'best_val_loss': float(min(history['val_loss']))
+ค่านี้คือ val_loss ต่ำสุดที่เคยเกิดขึ้น "ตลอดทุก epoch" (global min) ไม่ใช่
+val_loss ณ epoch ที่ EarlyStopping ตัดสินใจเซฟ checkpoint จริง (ซึ่งเลือกจาก
+val_auroc สูงสุด เมื่อ cfg.AE_MONITOR='val_auroc' ค่า default) สอง epoch นี้ไม่
+จำเป็นต้องตรงกัน ทำให้ชื่อ field "best_val_loss" เข้าใจผิดว่าเป็นค่าคู่กับโมเดล
+ที่ถูกเลือกจริง นอกจากนี้ src/visual.py ยังมี logic คำนวณ "best epoch" แบบ
+เดียวกันซ้ำอยู่อีกที่หนึ่งแยกต่างหาก (inline if/elif/else) ซึ่งเป็นความเสี่ยง
+duplicate logic เพิ่มเติมที่พบระหว่างแก้ไขจุดนี้
+
+--------------------------------------------------------------------------------
+เหตุผลเชิงทฤษฎีที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+"นิยามของ best epoch" ต้องมีเพียงหนึ่งเดียวในทั้งระบบ (single source of truth)
+และต้องตรงกับ logic ที่ EarlyStopping ใช้จริงตอนเทรน (ดู EarlyStopping.mode:
+'max' สำหรับ val_auroc, 'min' สำหรับ loss-based monitor อื่น ๆ) แก้โดยดึง logic
+นี้ออกมาเป็นฟังก์ชันกลาง get_best_epoch(history, monitor) ตัวเดียว ให้ทั้ง
+scripts/train.py (สำหรับ summary) และ src/visual.py (สำหรับ plot) เรียกใช้ร่วมกัน
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข
+--------------------------------------------------------------------------------
+--- scripts/train.py ---
+  summary_dict = {
+      ...
+      'best_val_loss': float(min(history['val_loss'])),
+      ...
+  }
+  ...
+  f'  Trained epochs : {len(history["train_loss"])}  (best val={min(history["val_loss"]):.6f})',
+
+--- src/visual.py (logic ซ้ำแยกต่างหาก) ---
+    _monitor = cfg.AE_MONITOR
+    if _monitor == 'val_auroc':
+        best_ep = int(np.argmax(history['val_auroc']))
+    elif _monitor == 'val_loss_normal':
+        best_ep = int(np.argmin(history['val_loss_normal']))
+    else:
+        best_ep = int(np.argmin(history['val_loss']))
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข
+--------------------------------------------------------------------------------
+--- src/engine.py (ฟังก์ชันกลางใหม่) ---
+  def get_best_epoch(history: Dict, monitor: str) -> int:
+    """Return the index of the epoch that EarlyStopping would consider "best"
+    for the given cfg.AE_MONITOR, using the exact same min/max rule as
+    EarlyStopping itself ('val_auroc' -> max, everything else -> min).
+    ... (ดูรายละเอียด docstring เต็มในไฟล์จริง) ...
+    """
+    if monitor == 'val_auroc':
+      return int(np.argmax(history['val_auroc']))
+    elif monitor == 'val_loss_normal':
+      return int(np.argmin(history['val_loss_normal']))
+    else:
+      return int(np.argmin(history['val_loss']))
+
+--- src/visual.py (แก้ import + แทนที่ logic ซ้ำด้วยการเรียกฟังก์ชันกลาง) ---
+  from src.engine import get_best_epoch
+  ...
+    _monitor = cfg.AE_MONITOR
+    best_ep = get_best_epoch(history, _monitor)
+
+--- scripts/train.py (แก้ import + ใช้ best_ep จริงแทน global min) ---
+  from src.engine import train_autoencoder, score_dataset_split, get_best_epoch
+  ...
+  best_ep = get_best_epoch(history, CFG.AE_MONITOR)
+
+  summary_dict = {
+      ...
+      'best_epoch'     : best_ep + 1,
+      'monitor'        : CFG.AE_MONITOR,
+      'best_val_loss'  : float(history['val_loss'][best_ep]),
+      'best_val_auroc' : float(history['val_auroc'][best_ep]),
+      ...
+  }
+  ...
+  f'  Bottleneck     : {CFG.AE_BOTTLENECK_CH} ch @ {_bneck_shape[0]}×{_bneck_shape[1]}',
+  f'  Trained epochs : {len(history["train_loss"])}  (best epoch={best_ep+1}, '
+  f'val_loss={history["val_loss"][best_ep]:.6f}, monitor={CFG.AE_MONITOR})',
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : src/engine.py (เพิ่มฟังก์ชันใหม่), scripts/train.py, src/visual.py
+  ผลต่อ final_results.json : เพิ่ม field ใหม่ 'best_epoch', 'monitor',
+  'best_val_auroc' และแก้ 'best_val_loss' ให้ตรงกับ checkpoint จริง — ถ้า
+  สคริปต์อื่นเคย parse final_results.json แบบ hardcode field เดิม ควรตรวจสอบ
+  ว่ายังอ่านค่าได้ถูกต้องหลังเพิ่ม field ใหม่ (เป็น superset ไม่ใช่ breaking change)
+
+
+================================================================================
+2.5 config.py มีบล็อกซ้ำซ้อนทั้งหมด
+    ไฟล์ที่แก้: config/config.py     |     สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+comment อธิบาย COLOR_MODE, field USE_GRAYSCALE/USE_GRAYSCALE_EQUALIZATION, และ
+property COLOR_MODE ถูกเขียนซ้ำเป๊ะสองรอบติดกันในไฟล์เดียวกัน (บรรทัด 59-86
+กับ 88-115 เหมือนกันทุกตัวอักษร) ไม่ทำให้เกิด runtime error (Python ยอมให้
+field/property ถูก define ซ้ำ ตัวหลังจะทับตัวแรก) แต่เป็นความเสี่ยง
+maintainability สูง
+
+--------------------------------------------------------------------------------
+เหตุผลที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+ไม่มีเหตุผลเชิงทฤษฎีซับซ้อน — เป็นหลัก "single source of truth" ธรรมดา: field/
+property หนึ่งตัวควรถูก define เพียงที่เดียวในโค้ด เพื่อป้องกันกรณีที่มีคนแก้
+บล็อกแรกโดยไม่รู้ว่ามีบล็อกซ้ำอยู่ข้างล่างซึ่งจะทับค่าที่แก้ไปเงียบ ๆ
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข / หลังแก้ไข
+--------------------------------------------------------------------------------
+ลบบล็อกที่ซ้ำทั้งบล็อกออก (comment + USE_GRAYSCALE + USE_GRAYSCALE_EQUALIZATION
++ property COLOR_MODE) เหลือไว้เพียงชุดเดียวก่อนหน้า __post_init__:
+
+  # ── Preprocessing / Color Mode ──────────────────────────────────────
+  # เลือกโหมดสีของภาพก่อนเข้า pipeline ด้วยการตั้งค่า True/False 2 ตัวนี้: ...
+  USE_GRAYSCALE               : bool = False
+  USE_GRAYSCALE_EQUALIZATION  : bool = False
+
+  @property
+  def COLOR_MODE(self) -> str:
+    """โหมดสีที่ระบบจะใช้จริง (คำนวณจากแฟล็กทั้งสองด้านบน)."""
+    if self.USE_GRAYSCALE_EQUALIZATION:
+      return 'grayscale_equalized'
+    elif self.USE_GRAYSCALE:
+      return 'grayscale'
+    else:
+      return 'rgb'
+
+  def __post_init__(self):
+      ... (โค้ดเดิมต่อจากนี้ ไม่มีการซ้ำอีกต่อไป)
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : config/config.py ไฟล์เดียว | ไม่มีผลต่อ behavior เพราะบล็อกที่ลบ
+  ออกเป็นค่าที่ถูกทับซ้ำอยู่แล้ว (ค่าที่ใช้จริงคือบล็อกหลังซึ่งเหมือนบล็อกแรก
+  ทุกประการ)
+
+
+================================================================================
+2.6 Dataset loader ซ้ำซ้อนระหว่างสองไฟล์
+    ไฟล์ที่แก้: scripts/train.py     |     สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+build_datasets_and_loaders() ใน src/data/dataset.py ทำ scan+transform+dataset+
+loader ทั้ง train/val/test/normal ไว้ครบแล้ว แต่ scripts/train.py กลับเขียน
+logic เดียวกันซ้ำเองแบบ inline แทนที่จะเรียกใช้ฟังก์ชันนี้ ทำให้ถ้ามีการแก้ logic
+ในอนาคต (เช่น เพิ่ม transform ใหม่) ต้องจำไปแก้ 2 ที่พร้อมกัน ไม่งั้นโค้ดจะ
+diverge แบบเงียบ ๆ
+
+--------------------------------------------------------------------------------
+เหตุผลที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+หลัก DRY (Don't Repeat Yourself) — logic การสร้าง dataset/loader ควรมีนิยาม
+เดียวในระบบ ไม่ใช่สองที่ที่ "บังเอิญ" เหมือนกัน
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข (scripts/train.py)
+--------------------------------------------------------------------------------
+  df_train = scan_directory(CFG.TRAIN_DIR, CFG)
+  df_val   = scan_directory(CFG.VAL_DIR,   CFG)
+  df_test  = scan_directory(CFG.TEST_DIR,  CFG)
+
+  for name, df in [('TRAIN',df_train),('VAL',df_val),('TEST',df_test)]:
+      console.print(f'[{name:5}] total={len(df):,}  {df["label"].value_counts().to_dict()}')
+
+  imagenet_tf, train_aug_tf, display_tf, preproc_display_tf = build_transforms(CFG)
+
+  train_ds = AnomalyDataset(df_train, imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
+  val_ds   = AnomalyDataset(df_val,   imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
+  test_ds  = AnomalyDataset(df_test,  imagenet_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
+
+  train_loader = make_loader(train_ds, CFG, shuffle=True)
+  val_loader   = make_loader(val_ds,   CFG)
+  test_loader  = make_loader(test_ds,  CFG)
+
+  df_train_normal = df_train[df_train['label']=='normal'].reset_index(drop=True)
+  normal_norm_tf = train_aug_tf if CFG.USE_AUGMENTATION else imagenet_tf
+  normal_ds      = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, CFG.IMAGE_SIZE, preproc_display_tf)
+  normal_loader  = make_loader(normal_ds, CFG, shuffle=True)
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข (scripts/train.py)
+--------------------------------------------------------------------------------
+  from src.data.dataset import build_datasets_and_loaders   # (แก้ import ด้านบนไฟล์)
+  ...
+  # Previously this block re-implemented (scan + transforms + dataset +
+  # loader, for train/val/test/normal-only) inline, duplicating the exact
+  # same logic already available in build_datasets_and_loaders(). Any future
+  # change to that logic would have needed to be made in two places at once
+  # and could silently drift apart. Now there is a single source of truth.
+  io_ = build_datasets_and_loaders(CFG)
+  df_train, df_val, df_test = io_['df_train'], io_['df_val'], io_['df_test']
+  train_loader = io_['train_loader']
+  val_loader   = io_['val_loader']
+  test_loader  = io_['test_loader']
+  normal_loader = io_['normal_loader']
+  train_ds, val_ds, test_ds, normal_ds = (
+      io_['train_ds'], io_['val_ds'], io_['test_ds'], io_['normal_ds'])
+
+  for name, df in [('TRAIN',df_train),('VAL',df_val),('TEST',df_test)]:
+      console.print(f'[{name:5}] total={len(df):,}  {df["label"].value_counts().to_dict()}')
+
+  dropped_counts = {
+      name: df.attrs.get('n_dropped_ambiguous_or_unlabelled', 0)
+      for name, df in [('train', df_train), ('val', df_val), ('test', df_test)]
+  }
+  if any(dropped_counts.values()):
+      console.print(f'[yellow]Dropped (ambiguous/unlabelled) per split: {dropped_counts}[/yellow]')
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : scripts/train.py ไฟล์เดียว (ไม่ต้องแก้ dataset.py เพราะ
+  build_datasets_and_loaders() มีอยู่แล้วและถูกต้อง) | behavior เดิมไม่เปลี่ยน
+  (เรียก logic เดียวกันทุกประการ แค่ผ่านฟังก์ชันกลางแทนการเขียนซ้ำ) | ได้
+  ผลพลอยได้คือเชื่อมกับการแก้ 2.8 (รายงานจำนวนไฟล์ที่ drop) ในจุดเดียวกันนี้ด้วย
+
+
+================================================================================
+2.7 Bottleneck 4×4 ทำให้ heatmap หยาบ (ข้อจำกัดเชิงออกแบบ)
+    ไฟล์ที่แก้: scripts/train.py     |     สถานะ: ไม่ใช่บั๊กที่ "แก้ให้หายขาด"
+    ได้ด้วยโค้ด — เพิ่มกลไก diagnostic/awareness ที่เป็นรูปธรรมแทน
+================================================================================
+
+--------------------------------------------------------------------------------
+ทำไมข้อนี้ "แก้ไม่ได้" แบบเดียวกับบั๊กอื่น
+--------------------------------------------------------------------------------
+นี่ไม่ใช่ error หรือ logic ที่ผิด แต่เป็น "การแลกเปลี่ยนเชิงสถาปัตยกรรม"
+(architectural trade-off): การบีบอัด feature 28×28 ลงเหลือ 4×4 ที่ bottleneck
+ทำให้ AE ต้องเรียนรู้ representation ที่กระชับ (ซึ่งเป็นเป้าหมายของ autoencoder
+โดยธรรมชาติ) แต่ก็ทำให้ error map ก่อน upsample มีความละเอียดเชิงพื้นที่จำกัด
+การ "แก้" ให้หายขาดจริง ๆ ต้องเปลี่ยนสถาปัตยกรรม (ลดจำนวน downsample stage)
+แล้วเทรนใหม่และวัดผลเปรียบเทียบ ซึ่งเป็นการทดลอง (ablation) ไม่ใช่ bug fix
+
+--------------------------------------------------------------------------------
+สิ่งที่แก้ไขได้จริงด้วยโค้ด: เปลี่ยนจาก "hardcode ที่ผิดได้" เป็น "diagnostic
+ที่ถูกต้องเสมอ + เตือนอัตโนมัติ"
+--------------------------------------------------------------------------------
+พบปัญหาเสริมระหว่างตรวจสอบจุดนี้: โค้ดเดิม hardcode ข้อความ "@ 4×4" ไว้ตรง ๆ
+ในบรรทัด print สรุปโมเดล ซึ่งจะกลายเป็นค่าที่ผิดทันทีถ้ามีคนเปลี่ยน IMAGE_SIZE
+หรือ BACKBONE variant ในอนาคต (เช่นเปลี่ยนเป็น ConvNeXt-small/base ที่ spatial
+size อาจต่างออกไป) แก้โดยคำนวณ bottleneck spatial size จริงแบบ dynamic จาก
+dummy forward pass แล้ว "เตือนอัตโนมัติ" ถ้าค่านั้นหยาบเกินไป (<=4) เพื่อให้
+ข้อจำกัดนี้มองเห็นได้ทุกครั้งที่รัน ไม่ใช่แค่จุดเดียวในรายงานสถิต
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข (scripts/train.py)
+--------------------------------------------------------------------------------
+  total_ae = sum(p.numel() for p in ae.parameters())
+  console.print(Panel(
+      f'Feature channels : [cyan]{extractor.out_channels}[/cyan]\n'
+      f'Bottleneck       : [cyan]{CFG.AE_BOTTLENECK_CH} ch[/cyan]\n'
+      f'AE params        : [cyan]{total_ae:,}[/cyan]  (all trainable)',
+      title='[bold]Autoencoder Ready[/bold]'
+  ))
+  ...
+  f'  Bottleneck     : {CFG.AE_BOTTLENECK_CH} ch @ 4×4',     # <- hardcode ตายตัว
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข (scripts/train.py)
+--------------------------------------------------------------------------------
+  total_ae = sum(p.numel() for p in ae.parameters())
+
+  # Report the ACTUAL bottleneck spatial resolution instead of a hardcoded
+  # "@4x4" assumption (which silently becomes wrong the moment IMAGE_SIZE
+  # or BACKBONE changes). This is also a lightweight, non-invasive way to
+  # surface the "how coarse is the heatmap before upsampling?" limitation
+  # (see Findings 2.7) at run time rather than only in a static report.
+  with torch.no_grad():
+    _dummy_feat = torch.zeros(1, extractor.out_channels, *extractor.spatial_size).to(CFG.DEVICE)
+    _bneck_shape = tuple(ae.bottleneck(_dummy_feat).shape[-2:])
+  bneck_note = ''
+  if min(_bneck_shape) <= 4:
+    bneck_note = (
+        f'  [yellow]note: bottleneck is only {_bneck_shape[0]}×{_bneck_shape[1]} — '
+        f'error maps at this resolution are coarse before upsampling; small/'
+        f'thin defects may be smoothed away by the Gaussian blur step[/yellow]\n'
+    )
+  console.print(Panel(
+      f'Feature channels : [cyan]{extractor.out_channels}[/cyan]\n'
+      f'Bottleneck       : [cyan]{CFG.AE_BOTTLENECK_CH} ch @ '
+      f'{_bneck_shape[0]}×{_bneck_shape[1]}[/cyan]\n'
+      f'{bneck_note}'
+      f'AE params        : [cyan]{total_ae:,}[/cyan]  (all trainable)',
+      title='[bold]Autoencoder Ready[/bold]'
+  ))
+  ...
+  f'  Bottleneck     : {CFG.AE_BOTTLENECK_CH} ch @ {_bneck_shape[0]}×{_bneck_shape[1]}',   # <- dynamic แล้ว
+
+--------------------------------------------------------------------------------
+สิ่งที่ยังต้องทำเองถ้าต้องการ "แก้" ข้อจำกัดนี้จริง (ไม่ใช่แค่ทำให้มองเห็น)
+--------------------------------------------------------------------------------
+เพิ่ม ablation study เปรียบเทียบ bottleneck spatial size อื่น ๆ (เช่น ลด
+downsample stage จาก 3 เหลือ 2 ใน ConvEncoderWithCNBlock/ConvDecoderWithCNBlock)
+แล้ววัด AUC-ROC/F1 เทียบกับค่า default เพื่อดูว่าความละเอียดที่มากขึ้นช่วยจับ
+defect เล็ก ๆ ได้ดีขึ้นจริงหรือไม่ — บันทึกไว้เป็นข้อเสนอแนะในหัวข้อ Roadmap ของ
+รายงานหลัก ไม่ใช่สิ่งที่ทำให้ในรอบการแก้ไขนี้ (มีความเสี่ยงต่อสถาปัตยกรรมสูง
+ต้องรันทดสอบบนข้อมูลจริงก่อนนำไปใช้)
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : scripts/train.py (2 จุดที่เคย hardcode "4×4") | ไม่กระทบ
+  สถาปัตยกรรมโมเดลหรือผลลัพธ์การเทรนใด ๆ (เป็นแค่การ print ข้อมูลที่ถูกต้องขึ้น)
+
+
+================================================================================
+2.8 ไม่รายงานจำนวนไฟล์ label กำกวมที่ถูก drop
+    ไฟล์ที่แก้: src/data/dataset.py, scripts/train.py     |     สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+ไฟล์ที่ label กำกวม (มีทั้ง normal keyword และ anomaly keyword ในชื่อเดียว หรือ
+ไม่มี keyword เลย) ถูก log warning แล้ว drop ออกจาก DataFrame เงียบ ๆ จำนวนที่
+drop ไปไม่ถูกบันทึกไว้ใน final_results.json หรือ artifact ใดที่ตรวจสอบย้อนหลัง
+ได้ง่าย ต้องไปขุด log ไฟล์เอาเอง
+
+--------------------------------------------------------------------------------
+เหตุผลที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+หลักความโปร่งใสของรายงานผลเชิงวิชาการ (transparent reporting) — จำนวนภาพที่ใช้
+จริงต่อ class ต่อ split ควรตรวจสอบได้จาก artifact อย่างเป็นทางการ ไม่ใช่แค่
+log แบบ informal ที่อาจถูกลบทิ้งหรือหาไม่เจอภายหลัง
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข (src/data/dataset.py)
+--------------------------------------------------------------------------------
+    df = pd.DataFrame(rows)
+    n_unk = df["label"].isna().sum()
+    if n_unk:
+        logger.warning(f"{directory}: {n_unk} unlabelled/ambiguous files dropped.")
+
+    return df.dropna(subset=["label"]).reset_index(drop=True)
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข (src/data/dataset.py)
+--------------------------------------------------------------------------------
+    df = pd.DataFrame(rows)
+    n_unk = int(df["label"].isna().sum())
+    if n_unk:
+        logger.warning(f"{directory}: {n_unk} unlabelled/ambiguous files dropped.")
+
+    clean_df = df.dropna(subset=["label"]).reset_index(drop=True)
+    # Attach drop-count as DataFrame metadata (pandas .attrs) rather than just
+    # logging it, so callers (e.g. scripts/train.py) can surface this number
+    # in final_results.json for a transparent, auditable report of how many
+    # files were excluded from each split and why. .attrs does not affect
+    # indexing/values, so this is fully backward-compatible with existing
+    # callers that only use the returned DataFrame as before.
+    clean_df.attrs["n_scanned"] = len(df)
+    clean_df.attrs["n_dropped_ambiguous_or_unlabelled"] = n_unk
+    clean_df.attrs["source_dir"] = str(directory)
+    return clean_df
+
+--- scripts/train.py (อ่านค่านี้กลับมารายงาน) ---
+    dropped_counts = {
+        name: df.attrs.get('n_dropped_ambiguous_or_unlabelled', 0)
+        for name, df in [('train', df_train), ('val', df_val), ('test', df_test)]
+    }
+    if any(dropped_counts.values()):
+        console.print(f'[yellow]Dropped (ambiguous/unlabelled) per split: {dropped_counts}[/yellow]')
+    ...
+    summary_dict = {
+        ...
+        'dropped_ambiguous_or_unlabelled_per_split': dropped_counts,
+        ...
+    }
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : src/data/dataset.py (เพิ่ม .attrs), scripts/train.py (อ่านและ
+  บันทึกลง final_results.json) | ไม่กระทบค่าของ DataFrame เดิมเลย (.attrs เป็น
+  metadata แยกต่างหาก ไม่ใช่คอลัมน์ข้อมูล) | ผู้ใช้เดิมของ scan_directory()
+  (เช่น scripts/ssim_check.py) ยังใช้งานได้ปกติทุกประการโดยไม่ต้องแก้ไข
+
+
+================================================================================
+2.9 Exception handling อาจ recurse ไม่จำกัด
+    ไฟล์ที่แก้: src/data/dataset.py — AnomalyDataset     |     สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+ถ้าโหลดภาพ path[idx] ไม่สำเร็จ (ไฟล์เสีย/corrupt) โค้ดจะ log error แล้วสุ่ม
+index ใหม่ทั้ง dataset แล้วเรียก __getitem__() ตัวเองซ้ำ "ไม่มีการจำกัดจำนวน
+ครั้ง" ถ้าไฟล์เสียจำนวนมาก (เช่น Google Drive หลุดชั่วคราว) มีความเสี่ยง
+recursion ลึกผิดปกติ หรือวนซ้ำได้ภาพเดิมซ้ำ ๆ โดยไม่มี log สรุปว่าเกิดขึ้นกี่ครั้ง
+
+--------------------------------------------------------------------------------
+เหตุผลที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+หลัก defensive programming: fallback mechanism ต้องมีขอบเขตชัดเจนเสมอ (bounded
+retry) ไม่ใช่ recursion ที่ไม่มีเงื่อนไขหยุด และควรนับสถิติการ fallback ไว้เพื่อ
+ตรวจสอบสุขภาพของ data pipeline ได้
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข
+--------------------------------------------------------------------------------
+    def __getitem__(self, idx):
+        path = self.paths[idx]
+        label = self.labels[idx]
+
+        try:
+            with Image.open(path) as img:
+                img = img.convert("RGB")
+                ow, oh = img.size
+                norm_t = self.norm_tf(img)
+                orig_t = self.orig_tf(img)
+                preproc_t = self.preproc_tf(img) if self.preproc_tf is not None else orig_t
+
+            return norm_t, orig_t, preproc_t, path, label, (ow, oh)
+
+        except Exception as e:
+            logger.error(f"Load failed {path}: {e}")
+            random_idx = random.randint(0, len(self) - 1)
+            return self.__getitem__(random_idx)     # <- recursion ไม่มีขอบเขต
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข
+--------------------------------------------------------------------------------
+    MAX_LOAD_RETRIES = 5   # (class attribute)
+
+    def _load_one(self, idx):
+        """Load+transform a single sample. Raises on failure (no fallback here)."""
+        path = self.paths[idx]
+        label = self.labels[idx]
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            ow, oh = img.size
+            norm_t = self.norm_tf(img)
+            orig_t = self.orig_tf(img)
+            preproc_t = self.preproc_tf(img) if self.preproc_tf is not None else orig_t
+        return norm_t, orig_t, preproc_t, path, label, (ow, oh)
+
+    def __getitem__(self, idx):
+        try:
+            return self._load_one(idx)
+        except Exception as e:
+            logger.error(f"Load failed {self.paths[idx]}: {e}")
+
+        for attempt in range(self.MAX_LOAD_RETRIES):
+            random_idx = random.randint(0, len(self) - 1)
+            try:
+                sample = self._load_one(random_idx)
+                self.n_fallbacks += 1
+                logger.warning(
+                    f"Substituted index {idx} -> {random_idx} "
+                    f"(fallback attempt {attempt + 1}/{self.MAX_LOAD_RETRIES}, "
+                    f"total fallbacks so far this run: {self.n_fallbacks})")
+                return sample
+            except Exception as e:
+                logger.error(f"Fallback load also failed {self.paths[random_idx]}: {e}")
+
+        raise RuntimeError(
+            f"AnomalyDataset: failed to load a usable sample for index {idx} "
+            f"after {self.MAX_LOAD_RETRIES} random fallback attempts. "
+            f"Too many corrupt/unreachable files in this split — check the "
+            f"data source (e.g. a dropped network drive) rather than retrying "
+            f"indefinitely.")
+
+  (self.n_fallbacks = 0 ถูกเพิ่มใน __init__() เป็นตัวนับสะสม)
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : src/data/dataset.py ไฟล์เดียว | พฤติกรรมปกติ (ไฟล์โหลดสำเร็จ)
+  ไม่เปลี่ยนแปลงเลย | เปลี่ยนเฉพาะ error path: จาก "recurse ไม่จำกัด" เป็น
+  "ลองใหม่สูงสุด 5 ครั้งแล้ว raise RuntimeError ที่ชัดเจน" ถ้าข้อมูลเสียหายจริง ๆ
+  DataLoader (โดยเฉพาะ num_workers>0) ควรจับ RuntimeError นี้และหยุดอย่างชัดเจน
+  แทนที่จะรันต่อด้วยข้อมูลที่เพี้ยนเงียบ ๆ
+
+
+================================================================================
+2.10 Grayscale/Equalize อาจทำให้เกิด domain shift (ข้อจำกัดเชิงทฤษฎี)
+     ไฟล์ที่แก้: src/data/dataset.py     |     สถานะ: ไม่ใช่บั๊กที่ "แก้ให้หายขาด"
+     ได้ด้วยโค้ด — เพิ่ม awareness warning ที่รันทุกครั้งแทน
+================================================================================
+
+--------------------------------------------------------------------------------
+ทำไมข้อนี้ "แก้ไม่ได้" แบบเดียวกับบั๊กอื่น
+--------------------------------------------------------------------------------
+ConvNeXtExtractor pretrain มาบนภาพสี ImageNet ปกติ การแปลงภาพเป็น grayscale
+หรือ grayscale+equalize ก่อนป้อนเข้า backbone เปลี่ยน texture/intensity
+statistics ไปจากที่ backbone เคยเห็นตอน pretrain แม้ extractor.fit_normalization()
+จะ refit ค่าเฉลี่ย/ส่วนเบี่ยงเบนมาตรฐานของ "feature" ให้เข้ากับโหมดสีนั้น ๆ
+ภายหลัง แต่ "น้ำหนักของ backbone เอง" ไม่ได้ fine-tune ตาม การจะขจัด domain
+shift นี้ให้หมดจริง ๆ ต้อง fine-tune backbone (ซึ่งขัดกับการออกแบบที่ freeze
+backbone ไว้ทั้งระบบ) จึงเป็นข้อจำกัดเชิงทฤษฎีที่ต้อง "อภิปราย" ไม่ใช่ "แก้"
+
+--------------------------------------------------------------------------------
+สิ่งที่แก้ไขได้จริงด้วยโค้ด: เพิ่ม warning log อัตโนมัติ
+--------------------------------------------------------------------------------
+เพิ่ม log warning ใน build_transforms() ที่ทำงานทุกครั้งที่ COLOR_MODE != 'rgb'
+เพื่อเตือนผู้ใช้ (และเป็นหลักฐานในไฟล์ log) ว่ากำลังใช้โหมดที่มีความเสี่ยง domain
+shift ให้ต้องตีความผลการทดลองด้วยความระมัดระวัง แทนที่จะปล่อยให้เป็นความรู้ที่
+อยู่แต่ในรายงานสถิตที่อาจไม่มีใครเปิดอ่านตอนรันจริง
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข (src/data/dataset.py)
+--------------------------------------------------------------------------------
+    color_mode = getattr(cfg, 'COLOR_MODE', 'rgb')
+    if color_mode == 'grayscale_equalized':
+        color_step = [GrayscaleEqualize()]
+    elif color_mode == 'grayscale':
+        color_step = [Grayscale()]
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข (src/data/dataset.py)
+--------------------------------------------------------------------------------
+    color_mode = getattr(cfg, 'COLOR_MODE', 'rgb')
+    if color_mode != 'rgb':
+        # AWARENESS NOTE (see Findings 2.10 — this is a conceptual/theoretical
+        # caveat, not something a code patch can fully "fix"): the backbone
+        # (ConvNeXtExtractor) is pretrained on natural RGB ImageNet images.
+        # Converting inputs to grayscale — and especially histogram-equalized
+        # grayscale, which applies an aggressive non-linear contrast remap —
+        # shifts the input texture/intensity statistics away from what the
+        # backbone was pretrained on, even though the tensor is replicated
+        # back to 3 channels so shapes still match. extractor.fit_normalization()
+        # re-fits the *feature* mean/std for this color mode, which corrects
+        # first-order scale/shift but does NOT fine-tune the frozen backbone
+        # weights themselves, so some domain-shift risk remains. This should
+        # be discussed explicitly in the thesis limitations section when
+        # comparing RGB vs grayscale/equalized experiment results.
+        logger.warning(
+            f"COLOR_MODE={color_mode!r}: input images are converted before "
+            f"the ImageNet-pretrained backbone sees them. This is a known "
+            f"domain-shift risk (see Findings 2.10) — interpret color-mode "
+            f"ablation results (e.g. E1/E2/E4/E5/E7/E8) with this in mind.")
+    if color_mode == 'grayscale_equalized':
+        color_step = [GrayscaleEqualize()]
+    elif color_mode == 'grayscale':
+        color_step = [Grayscale()]
+
+--------------------------------------------------------------------------------
+สิ่งที่ยังต้องทำเองถ้าต้องการ "แก้" ข้อจำกัดนี้จริง
+--------------------------------------------------------------------------------
+เขียนหัวข้อ Limitations ในวิทยานิพนธ์อธิบายประเด็นนี้ตรง ๆ เมื่อเปรียบเทียบผล
+RGB vs Grayscale vs Equalization และถ้ามีเวลา อาจทดลอง fine-tune บาง layer
+สุดท้ายของ backbone (ผ่อนคลาย requires_grad=False บางส่วน) เพื่อวัดว่าช่วยลด
+domain shift ได้จริงหรือไม่ — เป็นข้อเสนอแนะ ไม่ใช่สิ่งที่ทำในรอบแก้ไขนี้
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : src/data/dataset.py ไฟล์เดียว | ไม่กระทบค่า tensor หรือผลลัพธ์
+  การเทรนใด ๆ เลย (เป็นแค่ log warning เพิ่มเติม) | ปรากฏใน log ไฟล์ทุกครั้งที่
+  รัน E1,E2,E4,E5,E7,E8 (experiment ที่ไม่ใช่ RGB)
+
+
+================================================================================
+2.11 Docstring อ้างชื่อไฟล์ตัวเองผิด
+     ไฟล์ที่แก้: scripts/ssim_check.py     |     สถานะ: แก้ไขแล้ว
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม / โค้ดก่อนแก้ไข
+--------------------------------------------------------------------------------
+  วิธีรัน:
+      python scripts/check_ssim_loss.py     <- ชื่อไฟล์ผิด (ไฟล์จริงชื่อ ssim_check.py)
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข
+--------------------------------------------------------------------------------
+  วิธีรัน:
+      python scripts/ssim_check.py
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  แก้ 1 บรรทัดใน docstring ไม่กระทบการทำงานใด ๆ (เป็น cosmetic fix ล้วน ๆ)
+
+
+================================================================================
+2.12 สมการมิติ Encoder/Decoder เปราะบางนอก default config
+     ไฟล์ที่แก้: src/model/autoencoder.py     |     สถานะ: แก้ไขแล้ว (defensive fix)
+================================================================================
+
+--------------------------------------------------------------------------------
+ปัญหาเดิม
+--------------------------------------------------------------------------------
+ที่ IMAGE_SIZE=224 (default) มิติ 28→14→7→4→7→14→28 สอดคล้องกันพอดี แต่สมการนี้
+ผูกกับเลข 28 (หารด้วย 2 ได้ลงตัว 3 รอบ) เท่านั้น ถ้าเปลี่ยน IMAGE_SIZE เป็นค่าที่
+ทำให้ spatial size หลัง backbone ไม่ลงตัวตามนี้ (เช่น 27 หรือ 25) จะเกิด
+RuntimeError เรื่อง tensor size mismatch ที่ "ข้อความ error ไม่บอกสาเหตุที่แท้จริง
+ชัดเจน" (เช่น cryptic broadcasting error ลึกอยู่ในฟังก์ชัน loss แทนที่จะชี้ตรง
+ไปที่ต้นเหตุ)
+
+--------------------------------------------------------------------------------
+เหตุผลที่ใช้แก้ไข
+--------------------------------------------------------------------------------
+หลัก fail-fast with actionable errors: เมื่อรู้ว่าโค้ดมีข้อจำกัดที่ไม่สามารถ
+ครอบคลุมทุกกรณีได้ (ในที่นี้คือ IMAGE_SIZE ที่ไม่ลงตัว) ควรตรวจจับกรณีนั้นให้
+เร็วที่สุดเท่าที่จะทำได้ พร้อม error message ที่บอกสาเหตุและวิธีแก้ตรง ๆ แทนที่
+จะปล่อยให้ error เกิดขึ้นที่จุดอื่นซึ่งไกลจากต้นเหตุจริงและเข้าใจยาก
+
+--------------------------------------------------------------------------------
+โค้ดก่อนแก้ไข (src/model/autoencoder.py)
+--------------------------------------------------------------------------------
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    z = self.encoder(x)
+    return self.decoder(z)
+
+  def bottleneck(self, x: torch.Tensor) -> torch.Tensor:
+    return self.encoder(x)
+
+--------------------------------------------------------------------------------
+โค้ดหลังแก้ไข (src/model/autoencoder.py)
+--------------------------------------------------------------------------------
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    z = self.encoder(x)
+    recon = self.decoder(z)
+    if recon.shape != x.shape:
+      # The encoder/decoder kernel/stride/padding combination (k4s2p1 x2 +
+      # k3s2p1, mirrored on the decoder side) only reproduces the exact
+      # input spatial size for feature maps whose H and W are divisible by
+      # 8 (true for the default IMAGE_SIZE=224 -> 28x28 ConvNeXt-tiny stage2
+      # feature map, but NOT guaranteed for other IMAGE_SIZE values). Rather
+      # than letting this surface later as a cryptic broadcasting error
+      # inside the loss function, fail immediately here with a clear,
+      # actionable message.
+      raise RuntimeError(
+          f"FeatureAutoencoder: reconstructed shape {tuple(recon.shape)} != "
+          f"input shape {tuple(x.shape)}. This almost always means "
+          f"cfg.IMAGE_SIZE produces a backbone feature map whose spatial "
+          f"size is not evenly divisible by 8 (3 stride-2 downsample "
+          f"stages). Pick an IMAGE_SIZE such that "
+          f"(IMAGE_SIZE / backbone_downsample_factor) is divisible by 8, "
+          f"or reduce the number of downsample stages in "
+          f"ConvEncoderWithCNBlock/ConvDecoderWithCNBlock accordingly.")
+    return recon
+
+  def bottleneck(self, x: torch.Tensor) -> torch.Tensor:
+    return self.encoder(x)
+
+--------------------------------------------------------------------------------
+อิมแพค
+--------------------------------------------------------------------------------
+  ไฟล์ที่แก้ : src/model/autoencoder.py ไฟล์เดียว | ที่ IMAGE_SIZE=224 (default)
+  ไม่มีผลใด ๆ เลย (recon.shape == x.shape เสมออยู่แล้ว เงื่อนไข if จะไม่ทำงาน)
+  | มีผลเฉพาะกรณีที่มีคนเปลี่ยน IMAGE_SIZE หรือ BACKBONE variant แล้วมิติไม่ลงตัว
+  เท่านั้น ซึ่งจะได้ error message ที่ชัดเจนขึ้นทันทีแทน cryptic error เดิม
+
+
+================================================================================
+สรุปภาพรวมทั้ง 12 หัวข้อ
+================================================================================
+  ไฟล์ที่ถูกแก้ทั้งหมด (7 ไฟล์) :
+    src/losses.py, src/engine.py, src/visual.py, src/data/dataset.py,
+    src/model/autoencoder.py, scripts/train.py, scripts/ssim_check.py,
+    Colab_running.ipynb
+  ไฟล์ที่ไม่ต้องแก้เลย : config/config.py (แก้แค่ลบ duplicate, ไม่มี logic
+    เปลี่ยน), src/evaluate.py, src/io_utils.py, src/model/backbone_baseline.py,
+    scripts/visualize.py (ได้รับผลจากการแก้ src/visual.py โดยอัตโนมัติ)
+
+  ขั้นตอนที่ต้องทำต่อ (ตามลำดับ) :
+    1) รัน scripts/ssim_check.py ซ้ำบน feature จริงของ dataset เพื่อยืนยัน
+       พฤติกรรม SSIM ที่แก้แล้ว (2.1) บนข้อมูลจริง
+    2) เปิด Colab_running.ipynb เวอร์ชันที่แก้แล้ว ตรวจสอบว่า cell
+       configure_experiment() ทุกจุดรันได้ไม่ error บน environment จริงของ Colab
+       (เทสต์ในเครื่องนี้ยืนยันแล้วว่า logic ถูกต้อง แต่ path จริงบน Google
+       Drive ของผู้ใช้ยังไม่ได้ทดสอบ)
+    3) รัน E0-E8 ใหม่ทั้งหมดด้วยโค้ดเวอร์ชันที่แก้ไขแล้วทุกจุด (2.1 และ 2.3
+       เปลี่ยนตัวเลขที่ได้จากการเทรน, 2.2 เปลี่ยนกลไก config ให้พิสูจน์ได้จริง)
+    4) ตรวจสอบ final_results.json ของแต่ละ experiment ว่ามี field ใหม่
+       (best_epoch, monitor, best_val_auroc, dropped_ambiguous_or_unlabelled_per_split)
+       ครบถ้วน และนำตัวเลขเหล่านี้ไปใช้รายงานในวิทยานิพนธ์แทนตัวเลขชุดเดิม
+    5) เขียนหัวข้อ Limitations ในวิทยานิพนธ์ให้ครอบคลุม 2.7 (bottleneck
+       resolution) และ 2.10 (domain shift) อย่างตรงไปตรงมา ตามที่ทั้งสองหัวข้อ
+       นี้ "แก้ให้หายขาดด้วยโค้ดไม่ได้" แต่ต้องอภิปรายให้ชัดเจนแทน
+
+================================================================================
+จบเอกสาร
+================================================================================
