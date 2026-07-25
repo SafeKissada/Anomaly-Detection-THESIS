@@ -136,7 +136,7 @@ def main():
 
     # Report how many files were excluded per split due to ambiguous/missing
     # filename keywords (previously only visible in the log file, not in any
-    # artifact — see .attrs populated by scan_directory()).
+    # artifact — see .attrs populated by scan_and_split()).
     dropped_counts = {
         name: df.attrs.get('n_dropped_ambiguous_or_unlabelled', 0)
         for name, df in [('train', df_train), ('val', df_val), ('test', df_test)]

@@ -28,7 +28,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import torch
 
 from config.config import Config, set_seed
-from src.data.dataset import scan_directory, build_transforms, AnomalyDataset, make_loader
+from src.data.dataset import scan_and_split, build_transforms, AnomalyDataset, make_loader
 from src.model.backbone_baseline import ConvNeXtExtractor
 from src.losses import SSIMLoss
 import torch.nn as nn
@@ -52,10 +52,12 @@ def main():
     CFG = Config()
     set_seed(CFG.SEED)
 
-    section("1) โหลด extractor + 1 batch จริงจาก TRAIN_DIR")
-    df_train = scan_directory(CFG.TRAIN_DIR, CFG)
+    section("1) โหลด extractor + 1 batch จริงจาก train split (good/defect)")
+    split = scan_and_split(CFG)
+    df_train = split['train']
     if len(df_train) == 0:
-        print("ไม่พบไฟล์ภาพใน CFG.TRAIN_DIR — ตรวจสอบ path ใน config.py ก่อน")
+        print("ไม่พบไฟล์ภาพใน train split — ตรวจสอบ CFG.DATA_ROOT/good, "
+              "CFG.DATA_ROOT/defect ใน config.py ก่อน")
         return
 
     imagenet_tf, _, _, _ = build_transforms(CFG)
