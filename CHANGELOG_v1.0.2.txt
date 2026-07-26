@@ -1,0 +1,82 @@
+================================================================================
+CHANGELOG — v1.0.2
+ConvNeXt Feature-Space Autoencoder — SafeKissada/__Thesis__
+================================================================================
+Tag         : v1.0.2
+อ้างอิงจาก  : commit bf64ba1 (patch: 0001-remove-train-split-scoring.patch)
+Baseline ก่อนหน้า : v1.0.0 (commit bbfe7c4 — ดู Full_Fix_Log.txt ประกอบ)
+
+--------------------------------------------------------------------------------
+1. สรุปสั้น ๆ ว่า version นี้เปลี่ยนอะไร
+--------------------------------------------------------------------------------
+v1.0.0 (ตาม Full_Fix_Log.txt) แก้บั๊ก/ข้อจำกัดไปแล้ว 12 หัวข้อ (2.1–2.12) แต่
+ตอนนั้น scripts/train.py ยังคง "scoring" (ให้โมเดลทำนายคะแนน anomaly) และ
+รายงานผล metrics (AUC-ROC, F1 ฯลฯ) บน train split ด้วย นอกเหนือจาก val/test
+
+v1.0.2 ตัดพฤติกรรมนี้ออกทั้งหมด — train.py ตอนนี้ทำหน้าที่เดียวคือ
+"เทรน autoencoder ด้วยภาพ normal เท่านั้น" ส่วนการวัดผล/รายงานผล
+(threshold selection, metrics, กราฟ, gallery) เกิดขึ้นเฉพาะกับ val และ test
+เท่านั้น — ไม่มีการ scoring/รายงานผลบน train split อีกต่อไป
+
+--------------------------------------------------------------------------------
+2. รายละเอียดไฟล์ที่เปลี่ยน (จาก patch 0001-remove-train-split-scoring.patch)
+--------------------------------------------------------------------------------
+
+[1] src/io_utils.py
+    - SPLITS: ('train', 'val', 'test') -> ('val', 'test')
+      จุดศูนย์กลางเดียวที่กำหนดว่า split ไหนจะถูก score/save/load
+
+[2] scripts/train.py
+    - ไม่ดึง/ใช้ train_loader (good+defect เต็ม) มา scoring อีกต่อไป
+      คงไว้เฉพาะ normal_loader (เทรน AE) และ val_loader/test_loader (ประเมินผล)
+    - ตัดการเรียก score_dataset_split(train_loader, ...) ออกทั้งหมด
+    - ตัด train_metrics, แถว "Train" ในตารางผลลัพธ์ (rich Table),
+      predictions_train.csv, scores_train.npz ออก
+    - final_results.json เหลือผลลัพธ์เฉพาะ split "val" กับ "test"
+    - ยังคง print จำนวนไฟล์ดิบในฝั่ง train (good+defect) ไว้เป็นข้อมูล
+      เชิงสถิติเฉย ๆ (ไม่เกี่ยวกับโมเดล/ไม่ใช่การ scoring)
+
+[3] scripts/visualize.py
+    - ตัด reference ของ split "train" ออกจากทุกจุด: EDA class distribution,
+      ROC/PR curves, confusion matrix, score distribution, heatmap gallery,
+      browse_gallery, gallery_original/processed/preprocessed_images
+    - โหลด scores เฉพาะ val/test ผ่าน io_utils.SPLITS ที่แก้ในข้อ [1]
+
+[4] src/visual.py
+    - แก้ 5 ฟังก์ชัน (plot_class_distribution, plot_roc_curves,
+      plot_pr_curves, plot_confusion_matrices, plot_score_distributions)
+      ที่เดิม hardcode plt.subplots(1, 3, ...) (3 คอลัมน์ตายตัว สำหรับ
+      train/val/test) ให้ปรับจำนวนคอลัมน์ตาม len(split_meta) จริงแทน
+      เพื่อไม่ให้เหลือ subplot ว่างตอนนี้ที่มีแค่ val/test (2 splits)
+
+--------------------------------------------------------------------------------
+3. สิ่งที่ "ไม่" เปลี่ยน (ตั้งใจคงไว้)
+--------------------------------------------------------------------------------
+- src/data/dataset.py (scan_and_split, build_datasets_and_loaders) ยังคง
+  คำนวณ train split (70%) เหมือนเดิม เพราะยังต้องใช้กรองเอาเฉพาะภาพ normal
+  (df_train_normal / normal_loader) มาเทรน AE — มีแค่ "การเอา train split
+  ไป scoring/รายงานผล" เท่านั้นที่ถูกตัดออก ไม่ใช่การตัด train split ทิ้ง
+- scripts/ssim_check.py ยังอ้างอิง split['train'] อยู่ (สคริปต์ sanity-check
+  แยกต่างหาก ไม่เกี่ยวกับ pipeline การเทรน/ประเมินผลหลัก)
+- บั๊ก/ข้อจำกัดทั้ง 12 หัวข้อใน Full_Fix_Log.txt (v1.0.0) ยังคงสถานะเดิม
+  ไม่มีผลกระทบจากการเปลี่ยนแปลงรอบนี้
+
+--------------------------------------------------------------------------------
+4. ผลกระทบต่อ output/artifact
+--------------------------------------------------------------------------------
+ไฟล์ที่ "หายไป" หลังรัน scripts/train.py เวอร์ชันนี้ (เทียบกับ v1.0.0):
+  - scores_train.npz            (ไม่ถูกสร้างอีกต่อไป)
+  - predictions_train.csv       (ไม่ถูกสร้างอีกต่อไป)
+
+ไฟล์ที่ยังคงถูกสร้างตามปกติ: scores_val.npz, scores_test.npz,
+predictions_val.csv, predictions_test.csv, final_results.json (เหลือ
+เฉพาะ key 'val'/'test' ใน 'results'), history.json, threshold.json,
+checkpoint ทั้งหมด
+
+ถ้ามีสคริปต์ภายนอก (เช่น notebook วิเคราะห์เพิ่มเติม) ที่ยังอ้างอิงไฟล์
+scores_train.npz หรือ predictions_train.csv อยู่ ต้องแก้ไขสคริปต์เหล่านั้น
+ด้วยตัวเอง เพราะไฟล์นี้จะไม่ถูกสร้างขึ้นอีกต่อไปตั้งแต่ v1.0.2 เป็นต้นไป
+
+================================================================================
+จบ Changelog
+================================================================================
