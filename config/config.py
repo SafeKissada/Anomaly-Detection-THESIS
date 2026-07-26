@@ -32,6 +32,20 @@ class Config:
  
   # train, val, test ratios — must sum to 1.0 (checked in __post_init__)
   SPLIT_RATIOS  : Tuple[float, float, float] = (0.70, 0.15, 0.15)
+
+  # If True (default): the "anomaly" (defect) label is NEVER assigned to the
+  # train split — all defect files are split only between val/test (keeping
+  # the same relative val:test proportion as SPLIT_RATIOS, renormalized to
+  # sum to 1 since there is no train share for this label). The "normal"
+  # (good) label still uses the full train/val/test SPLIT_RATIOS above.
+  # This matches the unsupervised anomaly-detection setup: the autoencoder
+  # is trained on normal-only images anyway (see normal_loader in
+  # build_datasets_and_loaders()), so defect images sitting in the train
+  # split were never used for training in the first place — they were only
+  # scored/reported there. Set to False to restore the old behavior where
+  # defect files are also split proportionally into train (matching
+  # SPLIT_RATIOS exactly like the normal label).
+  ANOMALY_ONLY_IN_VAL_TEST : bool = True
  
   # Where the computed split is cached. Deliberately NOT under SAVE_PATH/
   # OUTPUT_PATH (which differ per experiment, e.g. Thesis_Result/E0/logs vs
