@@ -198,22 +198,38 @@ def _list_labeled_files(cfg) -> pd.DataFrame:
     return df
 
 
-def _stratified_group_split(df: pd.DataFrame, ratios, seed: int) -> pd.DataFrame:
+def _stratified_group_split(df: pd.DataFrame, ratios, seed: int,
+                             anomaly_only_in_val_test: bool = True) -> pd.DataFrame:
     """Assign each row of `df` (must have 'label' and 'group_id' columns) to
     'train' / 'val' / 'test', stratified independently within each label so
     class balance is preserved in every split, and keeping every group_id
     entirely inside a single split (see GROUP_ID_REGEX above).
+
+    If anomaly_only_in_val_test is True (default), the "anomaly" label is
+    excluded from train entirely: its groups are split only between val/test,
+    using the same relative val:test proportion as `ratios` (renormalized to
+    sum to 1, since there is no train share for this label). The "normal"
+    label is unaffected and always uses the full train/val/test ratios.
     """
     rng = np.random.RandomState(seed)
-    train_r, val_r, _test_r = ratios
+    train_r, val_r, test_r = ratios
     assigned = {}
 
     for label, sub in df.groupby("label"):
         group_ids = sorted(sub["group_id"].unique())  # deterministic order first
         rng.shuffle(group_ids)                         # then seeded shuffle
         n = len(group_ids)
-        n_train = int(round(n * train_r))
-        n_val = int(round(n * val_r))
+
+        if anomaly_only_in_val_test and label == "anomaly":
+            # No train share for this label — renormalize val:test so they
+            # still sum to 1 (e.g. (0.70,0.15,0.15) -> val/test split 50/50).
+            val_share = val_r / (val_r + test_r)
+            n_train = 0
+            n_val = int(round(n * val_share))
+        else:
+            n_train = int(round(n * train_r))
+            n_val = int(round(n * val_r))
+
         # Remainder goes to test — guarantees every group is assigned
         # exactly once (no dropped/duplicated groups from rounding).
         for gid in group_ids[:n_train]:
@@ -265,11 +281,25 @@ def scan_and_split(cfg) -> dict:
                 f"split may be stale relative to the current contents of "
                 f"{cfg.DATA_ROOT}. Delete {cache_path} to force recomputing "
                 f"the split if you have added/removed images.")
+        n_anomaly_in_train = ((full_df["label"] == "anomaly")
+                              & (full_df["split"] == "train")).sum()
+        if cfg.ANOMALY_ONLY_IN_VAL_TEST and n_anomaly_in_train > 0:
+            logger.warning(
+                f"cfg.ANOMALY_ONLY_IN_VAL_TEST=True but the cached split at "
+                f"{cache_path} still has {n_anomaly_in_train} anomaly "
+                f"file(s) assigned to train (it was computed before this "
+                f"setting was enabled, or with it set to False). The cache "
+                f"is used as-is and will NOT be recomputed automatically — "
+                f"delete {cache_path} and re-run to get a split where "
+                f"anomaly files only ever fall in val/test.")
     else:
         logger.info(f"No cached split at {cache_path} — computing a new one "
-                    f"(seed={cfg.SEED}, ratios={cfg.SPLIT_RATIOS}).")
+                    f"(seed={cfg.SEED}, ratios={cfg.SPLIT_RATIOS}, "
+                    f"anomaly_only_in_val_test={cfg.ANOMALY_ONLY_IN_VAL_TEST}).")
         raw_df = _list_labeled_files(cfg)
-        full_df = _stratified_group_split(raw_df, cfg.SPLIT_RATIOS, cfg.SEED)
+        full_df = _stratified_group_split(
+            raw_df, cfg.SPLIT_RATIOS, cfg.SEED,
+            anomaly_only_in_val_test=cfg.ANOMALY_ONLY_IN_VAL_TEST)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         full_df.to_csv(cache_path, index=False)
         logger.info(f"Saved split assignment ({len(full_df)} files) to {cache_path}")
