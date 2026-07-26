@@ -20,7 +20,7 @@ NORM_STATS_FILE = 'extractor_norm_stats.pt'
 THRESHOLD_FILE  = 'threshold.json'
 BEST_CKPT_FILE  = 'best_autoencoder.pth'
 FINAL_CKPT_FILE = 'autoencoder_final.pth'
-SPLITS          = ('train', 'val', 'test')
+SPLITS          = ('val', 'test')
 
 
 def history_path(cfg) -> str:

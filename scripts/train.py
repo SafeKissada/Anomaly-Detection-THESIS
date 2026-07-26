@@ -124,12 +124,16 @@ def main():
     # and could silently drift apart. Now there is a single source of truth.
     io_ = build_datasets_and_loaders(CFG)
     df_train, df_val, df_test = io_['df_train'], io_['df_val'], io_['df_test']
-    train_loader = io_['train_loader']
     val_loader   = io_['val_loader']
     test_loader  = io_['test_loader']
     normal_loader = io_['normal_loader']
-    train_ds, val_ds, test_ds, normal_ds = (
-        io_['train_ds'], io_['val_ds'], io_['test_ds'], io_['normal_ds'])
+    # NOTE: build_datasets_and_loaders() still returns a full train_loader/
+    # train_ds (good+defect) internally, but train.py deliberately never
+    # touches them below — training only ever sees normal_loader, and
+    # scoring/reporting only ever runs on val/test. This keeps "train" doing
+    # exactly one thing: training the autoencoder on normal images.
+    val_ds, test_ds, normal_ds = (
+        io_['val_ds'], io_['test_ds'], io_['normal_ds'])
 
     for name, df in [('TRAIN',df_train),('VAL',df_val),('TEST',df_test)]:
         console.print(f'[{name:5}] total={len(df):,}  {df["label"].value_counts().to_dict()}')
@@ -144,7 +148,8 @@ def main():
     if any(dropped_counts.values()):
         console.print(f'[yellow]Dropped (ambiguous/unlabelled) per split: {dropped_counts}[/yellow]')
 
-    print(f'Train : {len(train_ds):,}  |  Normal-only : {len(normal_ds):,}  '
+    print(f'Train (good+defect, on disk) : {len(df_train):,}  |  '
+          f'Normal-only (actually used to train AE) : {len(normal_ds):,}  '
           f'(augmentation={"ON" if CFG.USE_AUGMENTATION else "OFF"})')
     print(f'Val   : {len(val_ds):,}')
     print(f'Test  : {len(test_ds):,}')
@@ -206,11 +211,10 @@ def main():
     io_utils.save_history(history, CFG)
 
     # ── PHASE 5 — Anomaly scoring ─────────────────────────────────────────────
-    print('=== Scoring all splits ===')
-    (train_scores, train_y, train_paths, train_labels,
-     train_hmaps,  train_imgs, train_preproc_imgs) = score_dataset_split(
-        train_loader, extractor, ae, CFG, desc='Score-Train')
-
+    # Deliberately NOT scoring the train split here: train.py's only job is to
+    # train the autoencoder on normal images; all reported metrics/artifacts
+    # come from val (threshold selection) and test (final report) only.
+    print('=== Scoring val/test splits ===')
     (val_scores, val_y, val_paths, val_labels,
      val_hmaps,  val_imgs, val_preproc_imgs) = score_dataset_split(
         val_loader, extractor, ae, CFG, desc='Score-Val  ')
@@ -227,7 +231,6 @@ def main():
           f'NOT used for reported metrics): {oracle_threshold:.6f}  (F1={oracle_f1:.4f})')
     print(f'[Deployment]         Percentile threshold actually used below       : {threshold:.6f}')
 
-    train_metrics = compute_metrics(train_scores, train_y, threshold)
     val_metrics   = compute_metrics(val_scores,   val_y,   threshold)
     test_metrics  = compute_metrics(test_scores,  test_y,  threshold)
 
@@ -240,15 +243,13 @@ def main():
     table.add_column('Precision', justify='right')
     table.add_column('Recall',    justify='right')
     table.add_column('F1',        justify='right')
-    for name, m in [('Train',train_metrics),('Validation',val_metrics),('Test',test_metrics)]:
+    for name, m in [('Validation',val_metrics),('Test',test_metrics)]:
         table.add_row(name,
             f'{m["auc"]:.4f}', f'{m["ap"]:.4f}', f'{m["acc"]:.4f}',
             f'{m["precision"]:.4f}', f'{m["recall"]:.4f}', f'{m["f1"]:.4f}')
     console.print(table)
 
     # ── PHASE 8 — Save artifacts & final summary ──────────────────────────────
-    io_utils.save_scores('train', train_scores, train_y, train_paths, train_labels,
-                         train_hmaps, train_imgs, CFG, preproc_imgs=train_preproc_imgs)
     io_utils.save_scores('val', val_scores, val_y, val_paths, val_labels,
                          val_hmaps, val_imgs, CFG, preproc_imgs=val_preproc_imgs)
     io_utils.save_scores('test', test_scores, test_y, test_paths, test_labels,
@@ -265,8 +266,6 @@ def main():
                 'timestamp':   datetime.now().isoformat()}, ae_final_path)
     print(f'AE weights saved → {ae_final_path}')
 
-    make_pred_df(train_paths, train_labels, train_scores, train_metrics).to_csv(
-        f'{CFG.OUTPUT_PATH}/predictions_train.csv', index=False)
     make_pred_df(val_paths,   val_labels,   val_scores,   val_metrics).to_csv(
         f'{CFG.OUTPUT_PATH}/predictions_val.csv',   index=False)
     make_pred_df(test_paths,  test_labels,  test_scores,  test_metrics).to_csv(
@@ -296,7 +295,7 @@ def main():
         'results': {
             split: {k: float(v) for k,v in m.items()
                     if isinstance(v, float) and not np.isnan(v)}
-            for split, m in [('train',train_metrics),('val',val_metrics),('test',test_metrics)]
+            for split, m in [('val',val_metrics),('test',test_metrics)]
         },
         'timestamp': datetime.now().isoformat()
     }

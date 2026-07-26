@@ -15,8 +15,12 @@ from src.engine import get_best_epoch
 
 
 def plot_class_distribution(split_labels: Dict[str, List[str]], cfg) -> str:
-    """split_labels: {'Train': [...labels...], 'Validation': [...], 'Test': [...]}"""
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    """split_labels: {'Validation': [...labels...], 'Test': [...]} (any number
+    of splits — subplot count adapts to len(split_labels), it is not
+    hardcoded to 3 anymore now that train.py no longer scores a train split)."""
+    n = len(split_labels)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
+    axes = np.atleast_1d(axes)
     palette = {'normal':'#4C8BE0','anomaly':'#E05C4C'}
     for ax, (split_name, labels) in zip(axes, split_labels.items()):
         counts = pd.Series(labels).value_counts()
@@ -106,8 +110,12 @@ def plot_training_history(history: Dict, cfg) -> str:
 
 
 def plot_roc_curves(split_meta, cfg) -> str:
-    """split_meta: list of (name, metrics_dict, color)."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    """split_meta: list of (name, metrics_dict, color). Subplot count adapts
+    to len(split_meta) — not hardcoded to 3 (train.py may report only
+    val/test now)."""
+    n = len(split_meta)
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5))
+    axes = np.atleast_1d(axes)
     for ax, (name, m, color) in zip(axes, split_meta):
         ax.plot(m['fpr'], m['tpr'], color=color, lw=2.5,
                 label=f'ROC (AUC = {m["auc"]:.4f})')
@@ -131,7 +139,9 @@ def plot_roc_curves(split_meta, cfg) -> str:
 
 
 def plot_pr_curves(split_meta, cfg) -> str:
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    n = len(split_meta)
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5))
+    axes = np.atleast_1d(axes)
     for ax, (name, m, color) in zip(axes, split_meta):
         prec_c, rec_c, _ = precision_recall_curve(m['gt'], m['scores'])
         ax.plot(rec_c, prec_c, color=color, lw=2.5, label=f'AP = {m["ap"]:.4f}')
@@ -153,7 +163,9 @@ def plot_pr_curves(split_meta, cfg) -> str:
 
 
 def plot_confusion_matrices(split_meta, cfg) -> str:
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    n = len(split_meta)
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5))
+    axes = np.atleast_1d(axes)
     for ax, (name, m, color) in zip(axes, split_meta):
         sns.heatmap(m['cm'], annot=True, fmt='d', ax=ax, cmap='Blues',
                     linewidths=0.5, linecolor='grey',
@@ -175,7 +187,9 @@ def plot_confusion_matrices(split_meta, cfg) -> str:
 
 
 def plot_score_distributions(split_meta, threshold: float, cfg) -> str:
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    n = len(split_meta)
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5))
+    axes = np.atleast_1d(axes)
     for ax, (name, m, color) in zip(axes, split_meta):
         s_n = m['scores'][m['gt']==0]
         s_a = m['scores'][m['gt']==1]

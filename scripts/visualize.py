@@ -50,6 +50,9 @@ def main():
 
     threshold = float(thr_info['threshold'])
 
+    # io_utils.SPLITS is now ('val', 'test') — train.py no longer scores or
+    # saves a train split, since its only job is to train the autoencoder on
+    # normal images.
     data = {split: io_utils.load_scores(split, CFG) for split in io_utils.SPLITS}
 
     console.print(Panel(
@@ -71,7 +74,6 @@ def main():
 
     # ── EDA: class distribution per split ─────────────────────────────────────
     plot_class_distribution({
-        'Train'      : data['train']['labels'],
         'Validation' : data['val']['labels'],
         'Test'       : data['test']['labels'],
     }, CFG)
@@ -83,7 +85,6 @@ def main():
 
     # ── ROC / PR / confusion matrices / score distributions ───────────────────
     split_meta = [
-        ('Training Set',   metrics['train'], '#2196F3'),
         ('Validation Set', metrics['val'],   '#4CAF50'),
         ('Test Set',       metrics['test'],  '#FF5722'),
     ]
@@ -96,7 +97,7 @@ def main():
     # แบบที่ 1: base image = RGB จริง (แสดงเสมอ)
     # แบบที่ 2: base image = ภาพหลัง preprocessing จริง (grayscale/equalized) —
     #           แสดงเพิ่มเฉพาะเมื่อ COLOR_MODE ไม่ใช่ RGB
-    for split, split_name in [('train','Train'), ('val','Validation'), ('test','Test')]:
+    for split, split_name in [('val','Validation'), ('test','Test')]:
         d = data[split]
         visualize_heatmaps(
             d['paths'], d['orig_imgs'], d['heatmaps'], d['labels'],
@@ -135,8 +136,7 @@ def main():
     df_gallery.to_csv(f'{CFG.OUTPUT_PATH}/gallery_index.csv', index=False)
 
     print(f'df_gallery: {len(df_gallery):,} แถว '
-          f"(train={len(data['train']['paths']):,}, "
-          f"val={len(data['val']['paths']):,}, "
+          f"(val={len(data['val']['paths']):,}, "
           f"test={len(data['test']['paths']):,})")
 
     print('\nจำนวนภาพต่อ split × label (ground truth):')
@@ -146,13 +146,12 @@ def main():
     print(df_gallery.groupby(['split', 'correct']).size().unstack(fill_value=0))
 
     # 3-column gallery (original | error map | overlay) — misclassified samples
-    _ = browse_gallery(df_gallery, split_arrays, CFG, split='train', correct=False, n=100)
-    _ = browse_gallery(df_gallery, split_arrays, CFG, split='test',  correct=False, n=100)
-    _ = browse_gallery(df_gallery, split_arrays, CFG, split='val',   correct=False, n=100)
+    _ = browse_gallery(df_gallery, split_arrays, CFG, split='test', correct=False, n=100)
+    _ = browse_gallery(df_gallery, split_arrays, CFG, split='val',  correct=False, n=100)
 
     # ── Output gallery แบบที่ 1: ภาพจริง (RGB, always) ──────────────────────
     # ── Output gallery แบบที่ 2: ภาพหลัง image processing (heatmap overlay on RGB) ─
-    for split_name in ['train', 'val', 'test']:
+    for split_name in ['val', 'test']:
         _ = gallery_original_images(
             df_gallery, split_arrays, CFG,
             split=split_name, n=20, ncols=5)
@@ -166,7 +165,7 @@ def main():
     #   - gallery_preprocessed_overlay_images : ภาพ preprocessed + heatmap overlay
     if CFG.COLOR_MODE != 'RGB':
         print(f"\nCOLOR_MODE = '{CFG.COLOR_MODE}' → เพิ่ม gallery เวอร์ชัน preprocessed ด้วย")
-        for split_name in ['train', 'val', 'test']:
+        for split_name in ['val', 'test']:
             _ = gallery_preprocessed_images(
                 df_gallery, split_arrays, CFG,
                 split=split_name, n=20, ncols=5)
