@@ -1,12 +1,12 @@
 """
-Data pipeline: directory scanning, filename-based weak labelling,
-the AnomalyDataset, image transforms, and DataLoader factory.
+Data pipeline: good/defect directory scanning, the good(3-way)/defect(2-way)
+train/val/test split, the AnomalyDataset, image transforms, and DataLoader
+factory.
 """
 import logging
 import random
 import re
 from pathlib import Path
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -66,75 +66,6 @@ class GrayscaleEqualize:
 
     def __repr__(self):
         return f"{self.__class__.__name__}()"
-
-
-def infer_label_from_filename(filename: str, cfg) -> Optional[str]:
-    """Infer 'normal' / 'anomaly' label from filename keywords in cfg."""
-    name = filename.lower()
-    has_normal = any(k in name for k in cfg.NORMAL_KEYWORDS)
-    has_anomaly = any(k in name for k in cfg.ANOMALY_KEYWORDS)
-
-    if has_normal and has_anomaly:
-        logger.warning(f"Ambiguous keywords in filename: {filename} → Skipped.")
-        return None
-
-    if has_anomaly:
-        return "anomaly"
-    if has_normal:
-        return "normal"
-
-    return None
-
-
-def scan_directory(directory: str, cfg) -> pd.DataFrame:
-    """[LEGACY] Recursively scan `directory` for valid images and label them
-    by guessing from filename keywords (cfg.NORMAL_KEYWORDS / cfg.ANOMALY_KEYWORDS).
-
-    Kept only for backward compatibility with the old train/val/test-folders-
-    on-disk layout. New code should prefer scan_and_split(), which reads
-    labels directly from a good/ vs defect/ folder name (no keyword
-    guessing, no ambiguous-label files silently dropped) and computes a
-    reproducible, cached, seed-based train/val/test split instead of
-    requiring the split to already exist as separate folders on disk.
-    """
-    d = Path(directory)
-    if not d.exists():
-        raise FileNotFoundError(f"Not found: {directory}")
-
-    rows = []
-    valid_files = [
-        f for f in d.rglob("*")
-        if f.is_file() and f.suffix.lower() in cfg.VALID_EXT
-    ]
-
-    for f in sorted(valid_files):
-        label = infer_label_from_filename(f.name, cfg)
-        rows.append({
-            "path": str(f),
-            "filename": f.name,
-            "label": label
-        })
-
-    if not rows:
-        logger.warning(f"No valid files found in {directory}")
-        return pd.DataFrame(columns=["path", "filename", "label"])
-
-    df = pd.DataFrame(rows)
-    n_unk = int(df["label"].isna().sum())
-    if n_unk:
-        logger.warning(f"{directory}: {n_unk} unlabelled/ambiguous files dropped.")
-
-    clean_df = df.dropna(subset=["label"]).reset_index(drop=True)
-    # Attach drop-count as DataFrame metadata (pandas .attrs) rather than just
-    # logging it, so callers (e.g. scripts/train.py) can surface this number
-    # in final_results.json for a transparent, auditable report of how many
-    # files were excluded from each split and why. .attrs does not affect
-    # indexing/values, so this is fully backward-compatible with existing
-    # callers that only use the returned DataFrame as before.
-    clean_df.attrs["n_scanned"] = len(df)
-    clean_df.attrs["n_dropped_ambiguous_or_unlabelled"] = n_unk
-    clean_df.attrs["source_dir"] = str(directory)
-    return clean_df
 
 
 def _list_labeled_files(cfg) -> pd.DataFrame:
@@ -198,61 +129,126 @@ def _list_labeled_files(cfg) -> pd.DataFrame:
     return df
 
 
-def _stratified_group_split(df: pd.DataFrame, ratios, seed: int,
-                             anomaly_only_in_val_test: bool = True) -> pd.DataFrame:
-    """Assign each row of `df` (must have 'label' and 'group_id' columns) to
-    'train' / 'val' / 'test', stratified independently within each label so
-    class balance is preserved in every split, and keeping every group_id
-    entirely inside a single split (see GROUP_ID_REGEX above).
+def _split_good_three_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState) -> dict:
+    """Split the "normal" (good) group_ids into train/val/test using the
+    full SPLIT_RATIOS tuple (e.g. 70/15/15). This is the ONLY class that ever
+    gets a train share. Returns {group_id: split_name}.
+    """
+    train_r, val_r, _test_r = ratios
+    group_ids = sorted(sub["group_id"].unique())  # deterministic order first
+    rng.shuffle(group_ids)                         # then seeded shuffle
+    n = len(group_ids)
 
-    If anomaly_only_in_val_test is True (default), the "anomaly" label is
-    excluded from train entirely: its groups are split only between val/test,
-    using the same relative val:test proportion as `ratios` (renormalized to
-    sum to 1, since there is no train share for this label). The "normal"
-    label is unaffected and always uses the full train/val/test ratios.
+    n_train = int(round(n * train_r))
+    n_val = int(round(n * val_r))
+
+    assigned = {}
+    for gid in group_ids[:n_train]:
+        assigned[gid] = "train"
+    for gid in group_ids[n_train:n_train + n_val]:
+        assigned[gid] = "val"
+    # Remainder goes to test — guarantees every group is assigned exactly
+    # once (no dropped/duplicated groups from rounding).
+    for gid in group_ids[n_train + n_val:]:
+        assigned[gid] = "test"
+    return assigned
+
+
+def _split_defect_two_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState) -> dict:
+    """Split the "anomaly" (defect) group_ids into val/test ONLY.
+
+    There is no train branch here at all — it is not possible for this
+    function to assign a defect group_id to "train", by construction, not by
+    a config flag that could be turned off. The val:test split uses the
+    val:test portion of `ratios`, renormalized to sum to 1 since there is no
+    train share for this label (e.g. (0.70, 0.15, 0.15) -> defect val/test
+    50/50). Returns {group_id: split_name}, values in {"val", "test"} only.
+    """
+    _train_r, val_r, test_r = ratios
+    val_share = val_r / (val_r + test_r)
+    group_ids = sorted(sub["group_id"].unique())  # deterministic order first
+    rng.shuffle(group_ids)                         # then seeded shuffle
+    n = len(group_ids)
+
+    n_val = int(round(n * val_share))
+
+    assigned = {}
+    for gid in group_ids[:n_val]:
+        assigned[gid] = "val"
+    # Remainder goes to test — guarantees every group is assigned exactly
+    # once (no dropped/duplicated groups from rounding), and never "train".
+    for gid in group_ids[n_val:]:
+        assigned[gid] = "test"
+    return assigned
+
+
+def _stratified_group_split(df: pd.DataFrame, ratios, seed: int) -> pd.DataFrame:
+    """Assign each row of `df` (must have 'label' and 'group_id' columns) to
+    'train' / 'val' / 'test', keeping every group_id entirely inside a
+    single split (see GROUP_ID_REGEX above).
+
+    "good" (normal) and "defect" (anomaly) are split by two separate,
+    dedicated functions rather than one shared loop with a branch inside it:
+      - normal -> _split_good_three_way()  (train + val + test)
+      - anomaly -> _split_defect_two_way() (val + test only, never train)
+    This keeps "defect can never enter train" a structural property of which
+    function defect rows go through, not a runtime condition that a stray
+    flag could disable.
     """
     rng = np.random.RandomState(seed)
-    train_r, val_r, test_r = ratios
     assigned = {}
 
     for label, sub in df.groupby("label"):
-        group_ids = sorted(sub["group_id"].unique())  # deterministic order first
-        rng.shuffle(group_ids)                         # then seeded shuffle
-        n = len(group_ids)
-
-        if anomaly_only_in_val_test and label == "anomaly":
-            # No train share for this label — renormalize val:test so they
-            # still sum to 1 (e.g. (0.70,0.15,0.15) -> val/test split 50/50).
-            val_share = val_r / (val_r + test_r)
-            n_train = 0
-            n_val = int(round(n * val_share))
+        if label == "normal":
+            assigned.update(_split_good_three_way(sub, ratios, rng))
+        elif label == "anomaly":
+            assigned.update(_split_defect_two_way(sub, ratios, rng))
         else:
-            n_train = int(round(n * train_r))
-            n_val = int(round(n * val_r))
-
-        # Remainder goes to test — guarantees every group is assigned
-        # exactly once (no dropped/duplicated groups from rounding).
-        for gid in group_ids[:n_train]:
-            assigned[gid] = "train"
-        for gid in group_ids[n_train:n_train + n_val]:
-            assigned[gid] = "val"
-        for gid in group_ids[n_train + n_val:]:
-            assigned[gid] = "test"
+            raise ValueError(
+                f"Unexpected label {label!r} in _stratified_group_split(); "
+                f"expected only 'normal' or 'anomaly' (from _list_labeled_files()).")
 
     out = df.copy()
     out["split"] = out["group_id"].map(assigned)
     return out
 
 
+def _assert_no_defect_in_train(full_df: pd.DataFrame, cache_path: Path) -> None:
+    """Hard safety net: raise (never just warn) if any defect/anomaly file
+    ended up in the train split, whether the split was just computed or
+    loaded from a (possibly stale/hand-edited) cache file. Defect images
+    must never be usable for training or scoring-as-train — there is no
+    config flag to bypass this check.
+    """
+    n_anomaly_in_train = int(((full_df["label"] == "anomaly")
+                              & (full_df["split"] == "train")).sum())
+    if n_anomaly_in_train > 0:
+        raise RuntimeError(
+            f"Data integrity violation: {n_anomaly_in_train} defect/anomaly "
+            f"file(s) are assigned to the train split in {cache_path}. "
+            f"Defect images must NEVER appear in train — not for training, "
+            f"not for scoring. Delete {cache_path} and re-run to recompute "
+            f"a correct split (or, if the file was hand-edited, fix/remove "
+            f"the offending row(s)).")
+
+
 def scan_and_split(cfg) -> dict:
     """Build the train/val/test DataFrames from cfg.DATA_ROOT/{good,defect},
-    using a seed-based stratified split that is cached at cfg.SPLIT_CACHE_PATH.
+    using a seed-based, class-specific split that is cached at
+    cfg.SPLIT_CACHE_PATH.
 
     Replaces the older workflow of manually pre-sorting images into separate
     train/, val/, test/ folders on disk. Advantages:
       - label comes directly from the good/ vs defect/ folder name, not from
         guessing keywords in the filename -> removes the "ambiguous label,
         silently dropped" class of bugs entirely (no keyword parsing at all).
+      - good (normal) images are split into train/val/test (3-way); defect
+        (anomaly) images are split into val/test only (2-way) — via two
+        separate, dedicated functions (see _split_good_three_way() /
+        _split_defect_two_way()) rather than one split call handling both
+        classes generically. A defect file can therefore structurally never
+        end up in train, and this is verified again below regardless of
+        whether the split was freshly computed or loaded from cache.
       - the split is reproducible from one seed + one ratio tuple in config
         -> documentable in a single sentence in the Methodology chapter,
         instead of an undocumented manual folder arrangement.
@@ -264,9 +260,8 @@ def scan_and_split(cfg) -> dict:
         between experiments).
 
     Returns {'train': df, 'val': df, 'test': df}, each with columns
-    path/filename/label — schema-compatible with the legacy
-    scan_directory() output, so build_datasets_and_loaders() and everything
-    downstream needs no further changes.
+    path/filename/label. 'train' contains only "normal" (good) rows;
+    'val'/'test' each contain a mix of "normal" and "anomaly" rows.
     """
     cache_path = Path(cfg.SPLIT_CACHE_PATH)
 
@@ -281,28 +276,17 @@ def scan_and_split(cfg) -> dict:
                 f"split may be stale relative to the current contents of "
                 f"{cfg.DATA_ROOT}. Delete {cache_path} to force recomputing "
                 f"the split if you have added/removed images.")
-        n_anomaly_in_train = ((full_df["label"] == "anomaly")
-                              & (full_df["split"] == "train")).sum()
-        if cfg.ANOMALY_ONLY_IN_VAL_TEST and n_anomaly_in_train > 0:
-            logger.warning(
-                f"cfg.ANOMALY_ONLY_IN_VAL_TEST=True but the cached split at "
-                f"{cache_path} still has {n_anomaly_in_train} anomaly "
-                f"file(s) assigned to train (it was computed before this "
-                f"setting was enabled, or with it set to False). The cache "
-                f"is used as-is and will NOT be recomputed automatically — "
-                f"delete {cache_path} and re-run to get a split where "
-                f"anomaly files only ever fall in val/test.")
     else:
         logger.info(f"No cached split at {cache_path} — computing a new one "
-                    f"(seed={cfg.SEED}, ratios={cfg.SPLIT_RATIOS}, "
-                    f"anomaly_only_in_val_test={cfg.ANOMALY_ONLY_IN_VAL_TEST}).")
+                    f"(seed={cfg.SEED}, ratios={cfg.SPLIT_RATIOS}): good -> "
+                    f"train/val/test, defect -> val/test only.")
         raw_df = _list_labeled_files(cfg)
-        full_df = _stratified_group_split(
-            raw_df, cfg.SPLIT_RATIOS, cfg.SEED,
-            anomaly_only_in_val_test=cfg.ANOMALY_ONLY_IN_VAL_TEST)
+        full_df = _stratified_group_split(raw_df, cfg.SPLIT_RATIOS, cfg.SEED)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         full_df.to_csv(cache_path, index=False)
         logger.info(f"Saved split assignment ({len(full_df)} files) to {cache_path}")
+
+    _assert_no_defect_in_train(full_df, cache_path)
 
     result = {}
     for split_name in ["train", "val", "test"]:
@@ -487,23 +471,34 @@ def make_loader(ds, cfg, shuffle: bool = False) -> DataLoader:
 
 
 def build_datasets_and_loaders(cfg):
-    """Build train/val/test datasets and dataloaders (including the
-    normal-only loader used to train the autoencoder) from
-    cfg.DATA_ROOT/{good,defect}, via a cached, seed-based, stratified split
-    (see scan_and_split())."""
+    """Build val/test datasets/dataloaders plus the normal-only train loader
+    (the only loader ever used for training the autoencoder) from
+    cfg.DATA_ROOT/{good,defect}, via a cached, seed-based split (see
+    scan_and_split()).
+
+    There is deliberately no "full train" Dataset/DataLoader here: the train
+    split contains only "normal" (good) rows to begin with (scan_and_split()
+    guarantees defect can never land in train), and no code path in this
+    project ever needs a train-split Dataset/DataLoader other than
+    normal_loader below — training reads only normal_loader, and
+    scoring/reporting reads only val_loader/test_loader.
+    """
     split = scan_and_split(cfg)
     df_train, df_val, df_test = split["train"], split["val"], split["test"]
 
     imagenet_tf, train_aug_tf, display_tf, preproc_display_tf = build_transforms(cfg)
 
-    train_ds = AnomalyDataset(df_train, imagenet_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
     val_ds = AnomalyDataset(df_val, imagenet_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
     test_ds = AnomalyDataset(df_test, imagenet_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
 
-    train_loader = make_loader(train_ds, cfg, shuffle=True)
     val_loader = make_loader(val_ds, cfg)
     test_loader = make_loader(test_ds, cfg)
 
+    # Defensive filter (not a no-op in intent, even though scan_and_split()
+    # already guarantees df_train is normal-only): keeps the autoencoder's
+    # training data explicitly scoped to "normal" here too, so this line
+    # alone still documents/enforces the unsupervised-AE contract even if
+    # df_train's contents were ever produced by a different code path.
     df_train_normal = df_train[df_train["label"] == "normal"].reset_index(drop=True)
     normal_norm_tf = train_aug_tf if cfg.USE_AUGMENTATION else imagenet_tf
     normal_ds = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)
@@ -511,8 +506,7 @@ def build_datasets_and_loaders(cfg):
 
     return {
         "df_train": df_train, "df_val": df_val, "df_test": df_test,
-        "train_ds": train_ds, "val_ds": val_ds, "test_ds": test_ds,
-        "normal_ds": normal_ds,
-        "train_loader": train_loader, "val_loader": val_loader,
-        "test_loader": test_loader, "normal_loader": normal_loader,
+        "val_ds": val_ds, "test_ds": test_ds, "normal_ds": normal_ds,
+        "val_loader": val_loader, "test_loader": test_loader,
+        "normal_loader": normal_loader,
     }

@@ -6,7 +6,8 @@
   SSIM ถูกคำนวณบน "feature map ที่ normalize แบบ z-score" (mean~0, std~1,
   ค่าติดลบได้) จาก extractor.normalize() ไม่ใช่ภาพตรงๆ
   -> luminance term (2*mu_x*mu_y + C1) อาจติดลบ/พฤติกรรมไม่ตรงทฤษฎี
-  สคริปต์นี้โหลด extractor + 1 batch จริงจาก TRAIN_DIR แล้วเช็คว่า:
+  สคริปต์นี้โหลด extractor + 1 batch จริงจาก train split (good เท่านั้น,
+  ผ่าน scan_and_split()) แล้วเช็คว่า:
     1. SSIM loss/map มี NaN หรือ Inf หรือไม่
     2. ค่าที่ได้อยู่ในช่วงที่พอสมเหตุสมผลหรือไม่
        (loss ควรใกล้ 0 เมื่อ recon == feat, ควรเพิ่มขึ้นเมื่อใส่ noise)

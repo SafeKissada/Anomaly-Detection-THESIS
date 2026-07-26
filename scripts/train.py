@@ -127,9 +127,11 @@ def main():
     val_loader   = io_['val_loader']
     test_loader  = io_['test_loader']
     normal_loader = io_['normal_loader']
-    # NOTE: build_datasets_and_loaders() still returns a full train_loader/
-    # train_ds (good+defect) internally, but train.py deliberately never
-    # touches them below — training only ever sees normal_loader, and
+    # NOTE: good is split 3-way (train/val/test); defect is split 2-way
+    # (val/test only) and can never land in train (see scan_and_split() /
+    # _split_defect_two_way() in src/data/dataset.py, enforced with a hard
+    # RuntimeError if ever violated). df_train therefore already contains
+    # only normal images — training only ever sees normal_loader, and
     # scoring/reporting only ever runs on val/test. This keeps "train" doing
     # exactly one thing: training the autoencoder on normal images.
     val_ds, test_ds, normal_ds = (
@@ -148,8 +150,7 @@ def main():
     if any(dropped_counts.values()):
         console.print(f'[yellow]Dropped (ambiguous/unlabelled) per split: {dropped_counts}[/yellow]')
 
-    print(f'Train (good+defect, on disk) : {len(df_train):,}  |  '
-          f'Normal-only (actually used to train AE) : {len(normal_ds):,}  '
+    print(f'Train (good only, used to train AE) : {len(normal_ds):,}  '
           f'(augmentation={"ON" if CFG.USE_AUGMENTATION else "OFF"})')
     print(f'Val   : {len(val_ds):,}')
     print(f'Test  : {len(test_ds):,}')

@@ -1,13 +1,4 @@
 import random
-from pathlib import Path
-from dataclasses import dataclass
-from typing import Tuple
- 
-import numpy as np
-import torch
- 
- 
-import random
 import re
 from pathlib import Path
 from dataclasses import dataclass
@@ -30,22 +21,18 @@ class Config:
   GOOD_DIRNAME  : str = "good"
   DEFECT_DIRNAME: str = "defect"
  
-  # train, val, test ratios — must sum to 1.0 (checked in __post_init__)
+  # train, val, test ratios — must sum to 1.0 (checked in __post_init__).
+  # Only the "good" (normal) class ever uses all three shares. The "defect"
+  # (anomaly) class is split using only the val:test portion of this tuple,
+  # renormalized to sum to 1 (e.g. (0.70,0.15,0.15) -> defect val/test 50/50)
+  # — see _split_good_three_way() / _split_defect_two_way() in
+  # src/data/dataset.py. This is NOT a togglable option: defect files are
+  # NEVER assigned to train, in either code path, with no config flag to
+  # disable it. This matches the unsupervised anomaly-detection setup: the
+  # autoencoder is trained on normal-only images only (normal_loader in
+  # build_datasets_and_loaders()), so a defect file must never be usable
+  # for training or be scored/reported as if it were train data.
   SPLIT_RATIOS  : Tuple[float, float, float] = (0.70, 0.15, 0.15)
-
-  # If True (default): the "anomaly" (defect) label is NEVER assigned to the
-  # train split — all defect files are split only between val/test (keeping
-  # the same relative val:test proportion as SPLIT_RATIOS, renormalized to
-  # sum to 1 since there is no train share for this label). The "normal"
-  # (good) label still uses the full train/val/test SPLIT_RATIOS above.
-  # This matches the unsupervised anomaly-detection setup: the autoencoder
-  # is trained on normal-only images anyway (see normal_loader in
-  # build_datasets_and_loaders()), so defect images sitting in the train
-  # split were never used for training in the first place — they were only
-  # scored/reported there. Set to False to restore the old behavior where
-  # defect files are also split proportionally into train (matching
-  # SPLIT_RATIOS exactly like the normal label).
-  ANOMALY_ONLY_IN_VAL_TEST : bool = True
  
   # Where the computed split is cached. Deliberately NOT under SAVE_PATH/
   # OUTPUT_PATH (which differ per experiment, e.g. Thesis_Result/E0/logs vs
@@ -66,14 +53,6 @@ class Config:
   # train/val/test.
   GROUP_ID_REGEX : Optional[str] = None
  
-  # ── Legacy (pre-restructure) fields — kept only for backward
-  # compatibility with older scripts/notebooks that may still reference
-  # them directly. scan_and_split()/build_datasets_and_loaders() no longer
-  # read these; only the legacy scan_directory() helper still does.
-  TRAIN_DIR       : str = "train dataset path"
-  VAL_DIR         : str = "validation dataset path"
-  TEST_DIR        : str = "test dataset path"
- 
   SAVE_PATH   : str = 'save log'
   OUTPUT_PATH : str = 'save image/table'
   VALID_EXT       : Tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp')
@@ -83,9 +62,6 @@ class Config:
   SEED       : int          = 42
   DEVICE     : torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
   EXPERIMENT : str          = 'ConvNeXt_AutoEncoder_Anomaly'
-  # ── Label keywords (legacy, filename-based — see scan_directory()) ──────
-  NORMAL_KEYWORDS  : Tuple[str, ...] = ('false_call','falsecall','good','normal','false call')
-  ANOMALY_KEYWORDS : Tuple[str, ...] = ('defect','anomaly','bad','ng')
   # ── ConvNeXt backbone ───────────────────────────────────────────
   LOSS         : str            = 'MSE'
   SSIM_WEIGHT  : float          = 0.5

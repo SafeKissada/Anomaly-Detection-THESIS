@@ -6,7 +6,7 @@ Unsupervised visual anomaly detection: a frozen, pretrained **ConvNeXt** backbon
 
 The pipeline:
 
-1. Scans train/val/test image directories and weakly labels each image as `normal` or `anomaly` from filename keywords (e.g. `good`, `false_call` vs. `defect`, `ng`).
+1. Scans `DATA_ROOT/good` and `DATA_ROOT/defect`, labelling images `normal`/`anomaly` directly from the folder they're under (no filename-keyword guessing), then computes a seed-based, cached split: **good is split 3-way into train/val/test**; **defect is split 2-way into val/test only** — defect images can never be assigned to train, in training or scoring, by construction (see `scan_and_split()` in `src/data/dataset.py`).
 2. Extracts frozen ConvNeXt Stage-2 + Stage-3 features and per-channel normalizes them using statistics fitted on normal images only.
 3. Trains a small conv autoencoder (with residual "LightCNBlock" refinement stages) to reconstruct normal-image features, using early stopping on validation AUROC.
 4. Scores every image by aggregating the per-pixel SSIM+MSE reconstruction error (mean / max / top-k%) into a single anomaly score, and upsamples the error map into a Gaussian-smoothed heatmap.
@@ -60,17 +60,24 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Before running, edit `config/config.py` and set your dataset paths (they default to placeholder strings):
+Before running, edit `config/config.py` and set your dataset path (defaults to a placeholder string):
 
 ```python
-TRAIN_DIR   : str = "train dataset path"
-VAL_DIR     : str = "validation dataset path"
-TEST_DIR    : str = "test dataset path"
+DATA_ROOT     : str = "path to folder containing good/ and defect/ subfolders"
+GOOD_DIRNAME  : str = "good"     # normal images
+DEFECT_DIRNAME: str = "defect"   # anomaly images
+SPLIT_RATIOS  : Tuple[float, float, float] = (0.70, 0.15, 0.15)  # train, val, test
+
 SAVE_PATH   : str = "save path(log)"       # checkpoints, history, threshold, scores
 OUTPUT_PATH : str = "resual path(visual)"  # plots, predictions, gallery
 ```
 
-Each directory is scanned recursively for images (`.jpg`, `.jpeg`, `.png`, `.bmp`); labels are inferred from filenames via `NORMAL_KEYWORDS` / `ANOMALY_KEYWORDS`. Other tunables (backbone variant, image size, batch size, epochs, loss weights, scoring method, threshold percentile, etc.) also live in this file.
+`DATA_ROOT` must contain exactly two subfolders, `good/` and `defect/`, each scanned recursively for images (`.jpg`, `.jpeg`, `.png`, `.bmp`). The label comes directly from which folder a file is under — there is no filename-keyword guessing. The split (computed once, then cached to `SPLIT_CACHE_PATH`) is **class-specific**:
+
+- `good` images are split 3-way into **train / val / test** using `SPLIT_RATIOS` as-is.
+- `defect` images are split 2-way into **val / test only**, using just the val:test portion of `SPLIT_RATIOS` (renormalized to sum to 1). Defect images can **never** be assigned to train — not for training, and not for scoring — and this is checked in code (a `RuntimeError` is raised if it's ever violated) rather than left as a togglable option.
+
+Only normal (`good`) images from the train split are ever used to train the autoencoder; val and test each contain a mix of good + defect for evaluation. Other tunables (backbone variant, image size, batch size, epochs, loss weights, scoring method, threshold percentile, etc.) also live in this file.
 
 ## Usage
 
