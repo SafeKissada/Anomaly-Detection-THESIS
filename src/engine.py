@@ -78,13 +78,6 @@ def get_best_epoch(history: Dict, monitor: str) -> int:
 
 
 def aggregate_score_torch(error_map: torch.Tensor, cfg) -> torch.Tensor:
-  # NOTE: no longer called by train_autoencoder() as of the fix for the
-  # train/eval scoring-resolution mismatch (see upsample_and_smooth()).
-  # This aggregated the RAW, native-resolution error map with no upsampling
-  # or Gaussian smoothing, which made val_auroc (model-selection criterion)
-  # inconsistent with the final reported AUC-ROC (which IS upsampled +
-  # smoothed in score_dataset_split). Kept here only for reference /
-  # backward-compatibility with any external script that may still import it.
   b = error_map.size(0)
   flat = error_map.reshape(b, -1)
   if cfg.SCORE_METHOD == 'mean':

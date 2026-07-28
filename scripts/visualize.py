@@ -49,10 +49,6 @@ def main():
                             map_location='cpu')
 
     threshold = float(thr_info['threshold'])
-
-    # io_utils.SPLITS is now ('val', 'test') — train.py no longer scores or
-    # saves a train split, since its only job is to train the autoencoder on
-    # normal images.
     data = {split: io_utils.load_scores(split, CFG) for split in io_utils.SPLITS}
 
     console.print(Panel(
@@ -94,9 +90,6 @@ def main():
     plot_score_distributions(split_meta, threshold, CFG)
 
     # ── Heatmaps per split ────────────────────────────────────────────────────
-    # แบบที่ 1: base image = RGB จริง (แสดงเสมอ)
-    # แบบที่ 2: base image = ภาพหลัง preprocessing จริง (grayscale/equalized) —
-    #           แสดงเพิ่มเฉพาะเมื่อ COLOR_MODE ไม่ใช่ RGB
     for split, split_name in [('val','Validation'), ('test','Test')]:
         d = data[split]
         visualize_heatmaps(
@@ -159,10 +152,6 @@ def main():
             df_gallery, split_arrays, CFG,
             split=split_name, n=20, ncols=5)
 
-    # ── ถ้า color mode ไม่ใช่ RGB (grayscale / grayscale+equalization) ─────────
-    # เพิ่ม gallery อีก 2 แบบที่แสดงภาพซึ่งผ่าน preprocessing จริงที่ป้อนเข้าโมเดล:
-    #   - gallery_preprocessed_images         : ภาพ preprocessed ล้วน ๆ (ไม่มี overlay)
-    #   - gallery_preprocessed_overlay_images : ภาพ preprocessed + heatmap overlay
     if CFG.COLOR_MODE != 'RGB':
         print(f"\nCOLOR_MODE = '{CFG.COLOR_MODE}' → เพิ่ม gallery เวอร์ชัน preprocessed ด้วย")
         for split_name in ['val', 'test']:

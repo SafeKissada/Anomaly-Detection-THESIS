@@ -68,22 +68,6 @@ def main():
     CFG = Config()
     set_seed(CFG.SEED)
 
-    # NOTE (fix 2.NEW-1/2.NEW-2/2.NEW-3): the two Panel() calls below used to
-    # have COMMAS between what should have been one concatenated multi-line
-    # f-string. Python then parsed each line as a SEPARATE positional argument
-    # to Panel(), but rich.Panel.__init__() only accepts 2-3 positional args
-    # (renderable, box) — so this raised
-    #   TypeError: Panel.__init__() takes from 2 to 3 positional arguments
-    #   but 6 positional arguments (and 1 keyword-only argument) were given
-    # immediately, before main() could do anything else. Fixed by joining
-    # every line into a single string via adjacent string-literal
-    # concatenation (no comma) ending each line with '\n'. Also fixed two
-    # latent bugs that were hiding behind that crash and would have fired
-    # next: mismatched/misspelled rich markup tags ('cran'/'cray' instead of
-    # 'cyan', and an opening tag that didn't match its closing tag — both
-    # raise rich.errors.MarkupError), and CFG.AE_EPOCH (missing the trailing
-    # 'S') which does not exist on Config and would have raised
-    # AttributeError: 'Config' object has no attribute 'AE_EPOCH'.
     console.print(Panel(
         f'Device        : [bold cyan]{CFG.DEVICE}[/bold cyan]\n'
         f'Backbone      : [bold cyan]ConvNeXt-{CFG.BACKBONE.capitalize()}[/bold cyan]\n'
@@ -117,32 +101,17 @@ def main():
         title='[bold]Parameter[/bold]'
     ))
     # ── Datasets & DataLoaders ────────────────────────────────────────────────
-    # Previously this block re-implemented (scan + transforms + dataset +
-    # loader, for train/val/test/normal-only) inline, duplicating the exact
-    # same logic already available in build_datasets_and_loaders(). Any future
-    # change to that logic would have needed to be made in two places at once
-    # and could silently drift apart. Now there is a single source of truth.
     io_ = build_datasets_and_loaders(CFG)
     df_train, df_val, df_test = io_['df_train'], io_['df_val'], io_['df_test']
     val_loader   = io_['val_loader']
     test_loader  = io_['test_loader']
     normal_loader = io_['normal_loader']
-    # NOTE: good is split 3-way (train/val/test); defect is split 2-way
-    # (val/test only) and can never land in train (see scan_and_split() /
-    # _split_defect_two_way() in src/data/dataset.py, enforced with a hard
-    # RuntimeError if ever violated). df_train therefore already contains
-    # only normal images — training only ever sees normal_loader, and
-    # scoring/reporting only ever runs on val/test. This keeps "train" doing
-    # exactly one thing: training the autoencoder on normal images.
     val_ds, test_ds, normal_ds = (
         io_['val_ds'], io_['test_ds'], io_['normal_ds'])
 
     for name, df in [('TRAIN',df_train),('VAL',df_val),('TEST',df_test)]:
         console.print(f'[{name:5}] total={len(df):,}  {df["label"].value_counts().to_dict()}')
 
-    # Report how many files were excluded per split due to ambiguous/missing
-    # filename keywords (previously only visible in the log file, not in any
-    # artifact — see .attrs populated by scan_and_split()).
     dropped_counts = {
         name: df.attrs.get('n_dropped_ambiguous_or_unlabelled', 0)
         for name, df in [('train', df_train), ('val', df_val), ('test', df_test)]
@@ -173,11 +142,6 @@ def main():
 
     total_ae = sum(p.numel() for p in ae.parameters())
 
-    # Report the ACTUAL bottleneck spatial resolution instead of a hardcoded
-    # "@4x4" assumption (which silently becomes wrong the moment IMAGE_SIZE
-    # or BACKBONE changes). This is also a lightweight, non-invasive way to
-    # surface the "how coarse is the heatmap before upsampling?" limitation
-    # (see Findings 2.7) at run time rather than only in a static report.
     with torch.no_grad():
       _dummy_feat = torch.zeros(1, extractor.out_channels, *extractor.spatial_size).to(CFG.DEVICE)
       _bneck_shape = tuple(ae.bottleneck(_dummy_feat).shape[-2:])
@@ -212,9 +176,6 @@ def main():
     io_utils.save_history(history, CFG)
 
     # ── PHASE 5 — Anomaly scoring ─────────────────────────────────────────────
-    # Deliberately NOT scoring the train split here: train.py's only job is to
-    # train the autoencoder on normal images; all reported metrics/artifacts
-    # come from val (threshold selection) and test (final report) only.
     print('=== Scoring val/test splits ===')
     (val_scores, val_y, val_paths, val_labels,
      val_hmaps,  val_imgs, val_preproc_imgs) = score_dataset_split(
@@ -271,13 +232,7 @@ def main():
         f'{CFG.OUTPUT_PATH}/predictions_val.csv',   index=False)
     make_pred_df(test_paths,  test_labels,  test_scores,  test_metrics).to_csv(
         f'{CFG.OUTPUT_PATH}/predictions_test.csv',  index=False)
-
-    # Use the epoch actually selected by EarlyStopping (per cfg.AE_MONITOR),
-    # not the global min over every epoch ever seen — those are only
-    # guaranteed to be the same epoch when AE_MONITOR == 'val_loss'. With the
-    # default AE_MONITOR='val_auroc', the previous `min(history['val_loss'])`
-    # could silently report a val_loss value that has nothing to do with the
-    # checkpoint that was actually saved and loaded.
+    
     best_ep = get_best_epoch(history, CFG.AE_MONITOR)
 
     summary_dict = {

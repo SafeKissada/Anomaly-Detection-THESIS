@@ -140,14 +140,6 @@ class FeatureAutoencoder(nn.Module):
     z = self.encoder(x)
     recon = self.decoder(z)
     if recon.shape != x.shape:
-      # The encoder/decoder kernel/stride/padding combination (k4s2p1 x2 +
-      # k3s2p1, mirrored on the decoder side) only reproduces the exact
-      # input spatial size for feature maps whose H and W are divisible by
-      # 8 (true for the default IMAGE_SIZE=224 -> 28x28 ConvNeXt-tiny stage2
-      # feature map, but NOT guaranteed for other IMAGE_SIZE values). Rather
-      # than letting this surface later as a cryptic broadcasting error
-      # inside the loss function, fail immediately here with a clear,
-      # actionable message.
       raise RuntimeError(
           f"FeatureAutoencoder: reconstructed shape {tuple(recon.shape)} != "
           f"input shape {tuple(x.shape)}. This almost always means "

@@ -98,18 +98,9 @@ def _list_labeled_files(cfg) -> pd.DataFrame:
             f"{cfg.DEFECT_DIRNAME}}}")
 
     df = pd.DataFrame(rows)
-    # Sort by path BEFORE anything else. glob/rglob/os.listdir order is not
-    # guaranteed to be stable across OS/filesystem, so relying on it (even
-    # combined with a fixed seed) can silently produce a different split on
-    # a different machine. Sorting first makes the subsequent seeded shuffle
-    # fully deterministic regardless of platform.
     df = df.sort_values("path", kind="stable").reset_index(drop=True)
 
     if cfg.GROUP_ID_REGEX:
-        # Group multiple images of the same physical part/board together so
-        # they cannot be split across train/val/test (prevents a form of
-        # data leakage where the model implicitly "recognizes" a specific
-        # part it has already seen a different photo of during training).
         pattern = re.compile(cfg.GROUP_ID_REGEX)
         def _extract_group_id(fn):
             m = pattern.match(fn)
@@ -122,8 +113,6 @@ def _list_labeled_files(cfg) -> pd.DataFrame:
             return m.group(1)
         df["group_id"] = df["filename"].apply(_extract_group_id)
     else:
-        # No grouping requested: every file is its own group, equivalent to
-        # a plain per-file stratified split.
         df["group_id"] = df["path"]
 
     return df
@@ -147,8 +136,6 @@ def _split_good_three_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState)
         assigned[gid] = "train"
     for gid in group_ids[n_train:n_train + n_val]:
         assigned[gid] = "val"
-    # Remainder goes to test — guarantees every group is assigned exactly
-    # once (no dropped/duplicated groups from rounding).
     for gid in group_ids[n_train + n_val:]:
         assigned[gid] = "test"
     return assigned
@@ -175,8 +162,6 @@ def _split_defect_two_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState)
     assigned = {}
     for gid in group_ids[:n_val]:
         assigned[gid] = "val"
-    # Remainder goes to test — guarantees every group is assigned exactly
-    # once (no dropped/duplicated groups from rounding), and never "train".
     for gid in group_ids[n_val:]:
         assigned[gid] = "test"
     return assigned
@@ -292,9 +277,6 @@ def scan_and_split(cfg) -> dict:
     for split_name in ["train", "val", "test"]:
         split_df = (full_df[full_df["split"] == split_name]
                     [["path", "filename", "label"]].reset_index(drop=True))
-        # Same .attrs contract as the legacy scan_directory(), for anything
-        # downstream (e.g. scripts/train.py) that reads these fields — always
-        # 0 dropped here since label ambiguity is no longer possible.
         split_df.attrs["n_scanned"] = len(split_df)
         split_df.attrs["n_dropped_ambiguous_or_unlabelled"] = 0
         split_df.attrs["source_dir"] = str(cfg.DATA_ROOT)
@@ -317,12 +299,6 @@ class AnomalyDataset(Dataset):
                                used for visual comparison. If no color-mode transform
                                is configured (RGB mode), this equals display_tensor.
     """
-
-    # Hard cap on how many times __getitem__ may fall back to a random
-    # replacement sample before giving up. Without this cap, a batch of
-    # corrupt/unreachable files (e.g. a transient network-drive hiccup on
-    # Google Drive) could recurse arbitrarily deep or silently substitute an
-    # unbounded number of samples with no record of it happening.
     MAX_LOAD_RETRIES = 5
 
     def __init__(self, df: pd.DataFrame, norm_tf, orig_tf, image_size=(224, 224),
@@ -392,19 +368,6 @@ def build_transforms(cfg):
     """
     color_mode = getattr(cfg, 'COLOR_MODE', 'RGB')
     if color_mode != 'RGB':
-        # AWARENESS NOTE (this is a conceptual/theoretical
-        # caveat, not something a code patch can fully "fix"): the backbone
-        # (ConvNeXtExtractor) is pretrained on natural RGB ImageNet images.
-        # Converting inputs to grayscale — and especially histogram-equalized
-        # grayscale, which applies an aggressive non-linear contrast remap —
-        # shifts the input texture/intensity statistics away from what the
-        # backbone was pretrained on, even though the tensor is replicated
-        # back to 3 channels so shapes still match. extractor.fit_normalization()
-        # re-fits the *feature* mean/std for this color mode, which corrects
-        # first-order scale/shift but does NOT fine-tune the frozen backbone
-        # weights themselves, so some domain-shift risk remains. This should
-        # be discussed explicitly in the thesis limitations section when
-        # comparing RGB vs grayscale/equalized experiment results.
         logger.warning(
             f"COLOR_MODE={color_mode!r}: input images are converted before "
             f"the ImageNet-pretrained backbone sees them. This is a known "
@@ -445,8 +408,6 @@ def build_transforms(cfg):
     ])
 
     if color_step:
-        # Same color-mode transform as the model input, but WITHOUT ImageNet
-        # normalization — kept in plain 0..1 range for visual display.
         preproc_display_tf = v2.Compose([
             v2.Resize(cfg.IMAGE_SIZE),
             *color_step,
@@ -493,12 +454,6 @@ def build_datasets_and_loaders(cfg):
 
     val_loader = make_loader(val_ds, cfg)
     test_loader = make_loader(test_ds, cfg)
-
-    # Defensive filter (not a no-op in intent, even though scan_and_split()
-    # already guarantees df_train is normal-only): keeps the autoencoder's
-    # training data explicitly scoped to "normal" here too, so this line
-    # alone still documents/enforces the unsupervised-AE contract even if
-    # df_train's contents were ever produced by a different code path.
     df_train_normal = df_train[df_train["label"] == "normal"].reset_index(drop=True)
     normal_norm_tf = train_aug_tf if cfg.USE_AUGMENTATION else imagenet_tf
     normal_ds = AnomalyDataset(df_train_normal, normal_norm_tf, display_tf, cfg.IMAGE_SIZE, preproc_display_tf)

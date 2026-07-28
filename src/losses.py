@@ -22,14 +22,6 @@ class SSIMLoss(nn.Module):
     return g2d.unsqueeze(0).unsqueeze(0)
   
   def _rescale_to_unit_range(self, x, y):
-    # SSIM's C1/C2 constants assume inputs live in a known, bounded, positive
-    # dynamic range (classically [0, 1] for image intensities). Here x/y are
-    # z-score normalized deep features (mean ~0, unbounded sign), so C1/C2
-    # have no meaningful reference scale unless we first map both tensors
-    # into a shared [0, 1] range. We compute a joint min/max per-sample
-    # (over channel+spatial dims, shared between recon & target so the
-    # relative difference between them is preserved) and detach it so it
-    # behaves as a fixed rescaling constant rather than a learnable scale.
     with torch.no_grad():
         flat = torch.cat([x, y], dim=1)
         dims = tuple(range(1, flat.dim()))
@@ -92,6 +84,8 @@ def get_criterion(cfg) -> nn.Module:
   loss_name = cfg.LOSS.upper()
   if loss_name == 'SSIM':
     return SSIMLoss()
+  elif loss_name == 'MAE':
+    return nn.L1Loss()
   elif loss_name == 'MSE':
     return nn.MSELoss()
   elif loss_name in ('SSIM_MSE', 'SSIM+MSE', 'SSIMMSE'):
