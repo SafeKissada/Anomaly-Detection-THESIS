@@ -53,18 +53,18 @@ class Config:
   BACKBONE     : str            = 'tiny'
   IMAGE_SIZE   : Tuple[int,int] = (224, 224)
   # ── DataLoader ──────────────────────────────────────────────────
-  BATCH_SIZE   : int  = 64
+  BATCH_SIZE   : int  = 32
   NUM_WORKERS  : int  = 2
   PIN_MEMORY   : bool = True
  
   # ── Autoencoder Training ─────────────────────────────────────────
-  AE_EPOCHS         : int   = 150
+  AE_EPOCHS         : int   = 100
   AE_LR             : float = 1e-4
   AE_WEIGHT_DECAY   : float = 5e-4
   AE_BOTTLENECK_CH  : int   = 64
-  AE_PATIENCE       : int   = 10
-  AE_LR_STEP        : int   = 15
-  AE_LR_GAMMA       : float = 0.5
+  AE_LR_STEP        : int   = 25    
+  AE_LR_GAMMA       : float = 0.5   
+  AE_PATIENCE       : int   = 20    
  
   # ── Heatmap ─────────────────────────────────────────────────────
   HEATMAP_SIGMA         : float = 4.0
