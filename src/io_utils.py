@@ -6,8 +6,14 @@ consumed by scripts/visualize.py:
 - scores_{split}.npz         (scores, y_true, paths, labels, heatmaps, orig_imgs)
 - threshold.json             (deployment threshold + oracle diagnostic)
 - best_autoencoder.pth / autoencoder_final.pth (checkpoints)
+
+Also provides config_to_serializable_dict(), used by scripts/train.py to
+embed a full snapshot of every Config field into final_results.json, so
+each experiment's results file is self-documenting (needed to tell E0 vs E1
+vs E2 etc. apart in an ablation study without cross-referencing config.py).
 """
 
+import dataclasses
 import json
 import os
 from typing import Dict, List
@@ -41,6 +47,36 @@ def scores_path(split: str, cfg) -> str:
 
 def checkpoint_path(cfg, name: str = BEST_CKPT_FILE) -> str:
   return os.path.join(cfg.SAVE_PATH, name)
+
+
+# ── full config snapshot (for final_results.json) ────────────────────────────
+
+def config_to_serializable_dict(cfg) -> Dict:
+  """Convert a Config dataclass instance into a plain, JSON-serializable
+  dict containing EVERY configured field (LOSS, HUBER_DELTA, SSIM_WEIGHT,
+  MSE_WEIGHT, all AE_* hyperparameters, SCORE_METHOD, SPLIT_RATIOS, SEED,
+  color mode, etc.) — not just the small hand-picked subset scripts/train.py
+  used to put in final_results.json before this.
+
+  This is meant to be embedded under summary_dict['config'] in
+  final_results.json so that each experiment run (e.g. distinguishing E0 vs
+  E1 vs E2 in an ablation study) is fully self-documented by its own results
+  file — no need to separately track down which values config.py held at
+  the time that particular experiment was run.
+
+  Two things dataclasses.asdict() would otherwise miss/break on:
+    - COLOR_MODE is a @property, not a dataclass field, so asdict() does
+      not include it — added explicitly here since it's shown in the
+      training-time console panel (scripts/train.py) and is a genuinely
+      derived, useful-to-record setting (RGB / GRAYSCALE / GRAYSCALE_
+      EQUALIZATION).
+    - DEVICE is a torch.device object, which json.dump() cannot serialize
+      on its own — converted to its string form (e.g. 'cuda' or 'cpu').
+  """
+  d = dataclasses.asdict(cfg)
+  d['DEVICE'] = str(cfg.DEVICE)
+  d['COLOR_MODE'] = cfg.COLOR_MODE
+  return d
 
 
 # ── history.json ─────────────────────────────────────────────────────────────
