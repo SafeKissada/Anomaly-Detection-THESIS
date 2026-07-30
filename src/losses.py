@@ -84,16 +84,28 @@ def get_criterion(cfg) -> nn.Module:
   loss_name = cfg.LOSS.upper()
   if loss_name == 'SSIM':
     return SSIMLoss()
+  elif loss_name == 'MAE':
+    return nn.L1Loss()
   elif loss_name == 'MSE':
     return nn.MSELoss()
+  elif loss_name in ('MAE', 'L1'):
+    return nn.L1Loss()
   elif loss_name in ('SSIM_MSE', 'SSIM+MSE', 'SSIMMSE'):
     return CombinedLoss(alpha=cfg.SSIM_WEIGHT, beta=cfg.MSE_WEIGHT)
   else:
-    raise ValueError(f"Unknown cfg.LOSS: {cfg.LOSS!r} (expected 'MSE', 'SSIM', or 'SSIM_MSE')")
+    raise ValueError(f"Unknown cfg.LOSS: {cfg.LOSS!r} (expected 'MSE', 'MAE', 'SSIM', or 'SSIM_MSE')")
 
 
 def elementwise_error_map(feats: torch.Tensor, recon: torch.Tensor, criterion: nn.Module) -> torch.Tensor:
+  """Per-pixel error map used for anomaly scoring — MUST match the
+  reduction the given `criterion` actually trains on, or the score/AUROC/
+  threshold reported would silently be computed from a different error
+  metric than the one the model was optimized for.
+  """
   if isinstance(criterion, (SSIMLoss, CombinedLoss)):
     return criterion.dissimilarity_map(recon, feats)
+  elif isinstance(criterion, nn.L1Loss):
+    return (feats - recon).abs().mean(dim=1)
   else:
+    # Default / nn.MSELoss case.
     return ((feats - recon) ** 2).mean(dim=1)

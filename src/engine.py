@@ -263,7 +263,10 @@ def process_single_heatmap(
       err_map = criterion.dissimilarity_map(
           recon_t.unsqueeze(0), feat_t.unsqueeze(0)
       ).squeeze(0).numpy()
+    elif criterion is not None and isinstance(criterion, nn.L1Loss):
+      err_map = (feat_t - recon_t).abs().mean(dim=0).numpy()
     else:
+      # Default / nn.MSELoss case.
       err_map = ((feat_t - recon_t) ** 2).mean(dim=0).numpy()
 
     raw_map = upsample_and_smooth(err_map, sigma=sigma, out_size=out_size)
