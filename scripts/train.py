@@ -87,6 +87,7 @@ def main():
         f'BRIGHTNESS    : [bold white]{CFG.AUG_COLOR_JITTER }[/bold white]\n'
         f'MSE WEIGHT    : [bold white]{CFG.MSE_WEIGHT}[/bold white]\n'
         f'SSIM WEIGHT   : [bold white]{CFG.SSIM_WEIGHT}[/bold white]\n'
+        f'HUBER DELTA   : [bold white]{CFG.HUBER_DELTA}[/bold white]\n'
         f'BATCH SIZE    : [bold white]{CFG.BATCH_SIZE}[/bold white]\n'
         f'EPOCHS        : [bold white]{CFG.AE_EPOCHS}[/bold white]\n'
         f'LR            : [bold white]{CFG.AE_LR}[/bold white]\n'

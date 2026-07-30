@@ -66,6 +66,10 @@ class Config:
   LOSS         : str            = 'MSE'
   SSIM_WEIGHT  : float          = 0.5
   MSE_WEIGHT   : float          = 0.5
+  # Threshold (delta) at which nn.HuberLoss switches from quadratic (like
+  # MSE, for |error| < delta) to linear (like MAE, for |error| >= delta)
+  # behavior. Only used when cfg.LOSS is 'HUBER'/'SMOOTH_L1'.
+  HUBER_DELTA  : float          = 1.0
   OPTIM        : str            = 'Adam'
   BACKBONE     : str            = 'tiny'
   IMAGE_SIZE   : Tuple[int,int] = (224, 224)

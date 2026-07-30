@@ -80,6 +80,21 @@ class CombinedLoss(nn.Module):
     return self.alpha * ssim_map + self.beta * mse_map
 
 
+def _huber_elementwise(diff: torch.Tensor, delta: float) -> torch.Tensor:
+  """Per-element Huber loss (before any reduction), matching nn.HuberLoss's
+  own formula exactly:
+      0.5 * diff**2            if |diff| <  delta   (quadratic, like MSE)
+      delta * (|diff| - 0.5*delta)  if |diff| >= delta   (linear, like MAE)
+  Factored out here so both elementwise_error_map() (below) and
+  process_single_heatmap() (src/engine.py) compute it identically instead
+  of maintaining two copies of the same formula.
+  """
+  abs_diff = diff.abs()
+  quadratic = 0.5 * diff ** 2
+  linear = delta * (abs_diff - 0.5 * delta)
+  return torch.where(abs_diff < delta, quadratic, linear)
+
+
 def get_criterion(cfg) -> nn.Module:
   loss_name = cfg.LOSS.upper()
   if loss_name == 'SSIM':
@@ -90,10 +105,13 @@ def get_criterion(cfg) -> nn.Module:
     return nn.MSELoss()
   elif loss_name in ('MAE', 'L1'):
     return nn.L1Loss()
+  elif loss_name in ('HUBER', 'SMOOTH_L1', 'SMOOTHL1'):
+    return nn.HuberLoss(delta=cfg.HUBER_DELTA)
   elif loss_name in ('SSIM_MSE', 'SSIM+MSE', 'SSIMMSE'):
     return CombinedLoss(alpha=cfg.SSIM_WEIGHT, beta=cfg.MSE_WEIGHT)
   else:
-    raise ValueError(f"Unknown cfg.LOSS: {cfg.LOSS!r} (expected 'MSE', 'MAE', 'SSIM', or 'SSIM_MSE')")
+    raise ValueError(f"Unknown cfg.LOSS: {cfg.LOSS!r} (expected 'MSE', 'MAE', "
+                     f"'HUBER', 'SSIM', or 'SSIM_MSE')")
 
 
 def elementwise_error_map(feats: torch.Tensor, recon: torch.Tensor, criterion: nn.Module) -> torch.Tensor:
@@ -106,6 +124,8 @@ def elementwise_error_map(feats: torch.Tensor, recon: torch.Tensor, criterion: n
     return criterion.dissimilarity_map(recon, feats)
   elif isinstance(criterion, nn.L1Loss):
     return (feats - recon).abs().mean(dim=1)
+  elif isinstance(criterion, nn.HuberLoss):
+    return _huber_elementwise(feats - recon, criterion.delta).mean(dim=1)
   else:
     # Default / nn.MSELoss case.
     return ((feats - recon) ** 2).mean(dim=1)

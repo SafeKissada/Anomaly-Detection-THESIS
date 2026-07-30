@@ -9,7 +9,7 @@ from scipy.ndimage import gaussian_filter
 from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
-from src.losses import SSIMLoss, CombinedLoss, get_criterion, elementwise_error_map
+from src.losses import SSIMLoss, CombinedLoss, get_criterion, elementwise_error_map, _huber_elementwise
 
 
 class EarlyStopping:
@@ -265,6 +265,8 @@ def process_single_heatmap(
       ).squeeze(0).numpy()
     elif criterion is not None and isinstance(criterion, nn.L1Loss):
       err_map = (feat_t - recon_t).abs().mean(dim=0).numpy()
+    elif criterion is not None and isinstance(criterion, nn.HuberLoss):
+      err_map = _huber_elementwise(feat_t - recon_t, criterion.delta).mean(dim=0).numpy()
     else:
       # Default / nn.MSELoss case.
       err_map = ((feat_t - recon_t) ** 2).mean(dim=0).numpy()
