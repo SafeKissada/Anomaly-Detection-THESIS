@@ -99,8 +99,6 @@ def get_criterion(cfg) -> nn.Module:
   loss_name = cfg.LOSS.upper()
   if loss_name == 'SSIM':
     return SSIMLoss()
-  elif loss_name == 'MAE':
-    return nn.L1Loss()
   elif loss_name == 'MSE':
     return nn.MSELoss()
   elif loss_name in ('MAE', 'L1'):
