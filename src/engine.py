@@ -10,6 +10,7 @@ from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
 from src.losses import SSIMLoss, CombinedLoss, get_criterion, elementwise_error_map, _huber_elementwise
+from src.optimes import get_optimizer
 
 
 class EarlyStopping:
@@ -99,7 +100,7 @@ def train_autoencoder(
     val_loader,
     cfg
 ) -> Dict:
-    optimizer = torch.optim.Adam(ae.parameters(), lr=cfg.AE_LR, weight_decay=cfg.AE_WEIGHT_DECAY)
+    optimizer = get_optimizer(cfg, ae.parameters())
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=cfg.AE_LR_STEP, gamma=cfg.AE_LR_GAMMA)
     criterion = get_criterion(cfg)
 

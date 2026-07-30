@@ -10,47 +10,14 @@ import torch
  
 @dataclass
 class Config:
-  # ── Data layout (NEW: good/defect only, split is computed — see below) ──
-  # DATA_ROOT must contain exactly two subfolders named GOOD_DIRNAME and
-  # DEFECT_DIRNAME (default 'good' and 'defect'). train/val/test are no
-  # longer separate folders on disk — they are computed once by
-  # src.data.dataset.scan_and_split() using SEED + SPLIT_RATIOS below, then
-  # cached to SPLIT_CACHE_PATH so every one of the E0-E8 experiments reuses
-  # the exact same split (required for a fair ablation comparison).
   DATA_ROOT     : str = "dataset root path (contains good/ and defect/ subfolders)"
   GOOD_DIRNAME  : str = "good"
   DEFECT_DIRNAME: str = "defect"
  
-  # train, val, test ratios — must sum to 1.0 (checked in __post_init__).
-  # Only the "good" (normal) class ever uses all three shares. The "defect"
-  # (anomaly) class is split using only the val:test portion of this tuple,
-  # renormalized to sum to 1 (e.g. (0.70,0.15,0.15) -> defect val/test 50/50)
-  # — see _split_good_three_way() / _split_defect_two_way() in
-  # src/data/dataset.py. This is NOT a togglable option: defect files are
-  # NEVER assigned to train, in either code path, with no config flag to
-  # disable it. This matches the unsupervised anomaly-detection setup: the
-  # autoencoder is trained on normal-only images only (normal_loader in
-  # build_datasets_and_loaders()), so a defect file must never be usable
-  # for training or be scored/reported as if it were train data.
   SPLIT_RATIOS  : Tuple[float, float, float] = (0.70, 0.15, 0.15)
  
-  # Where the computed split is cached. Deliberately NOT under SAVE_PATH/
-  # OUTPUT_PATH (which differ per experiment, e.g. Thesis_Result/E0/logs vs
-  # Thesis_Result/E1/logs) so that all 9 experiments (E0-E8) share this one
-  # file and therefore see identical train/val/test membership. Delete this
-  # file manually if you deliberately want to regenerate a new split.
   SPLIT_CACHE_PATH : str = "splits/split_assignment.csv"
  
-  # Optional: set this if multiple images can belong to the same physical
-  # component/board (e.g. several angles/lighting conditions of one part).
-  # If left as None, splitting is a plain per-class stratified random split
-  # (fine only if each image is an independent, unrelated sample). If set,
-  # it must be a regex with one capture group that extracts a stable group
-  # id from the filename (e.g. r'^(.*?)_\d+\.\w+$' to group
-  # "board007_0.jpg","board007_1.jpg" under group id "board007") — all
-  # images sharing a group id are then kept together in the same split, to
-  # avoid leaking near-duplicate views of the same physical part across
-  # train/val/test.
   GROUP_ID_REGEX : Optional[str] = None
  
   SAVE_PATH   : str = 'save log'
@@ -70,7 +37,19 @@ class Config:
   # MSE, for |error| < delta) to linear (like MAE, for |error| >= delta)
   # behavior. Only used when cfg.LOSS is 'HUBER'/'SMOOTH_L1'.
   HUBER_DELTA  : float          = 1.0
+  # Which optimizer src/optim.get_optimizer() builds for the autoencoder.
+  # One of 'Adam' | 'AdamW' | 'SGD' | 'RMSprop' (case-insensitive).
   OPTIM        : str            = 'Adam'
+  # Momentum — only read by SGD and RMSprop (Adam/AdamW ignore it and use
+  # their own internal beta1/beta2 instead).
+  AE_MOMENTUM      : float = 0.9
+  # Nesterov momentum — SGD only, and only takes effect if AE_MOMENTUM > 0
+  # (torch.optim.SGD requires momentum > 0 for nesterov=True; get_optimizer()
+  # forces this False automatically otherwise rather than raising).
+  AE_SGD_NESTEROV  : bool  = True
+  # RMSprop-only knobs.
+  AE_RMSPROP_ALPHA : float = 0.99
+  AE_RMSPROP_EPS   : float = 1e-8
   BACKBONE     : str            = 'tiny'
   IMAGE_SIZE   : Tuple[int,int] = (224, 224)
   # ── DataLoader ──────────────────────────────────────────────────
@@ -128,9 +107,16 @@ class Config:
  
   _DATA_ROOT_PLACEHOLDER = "dataset root path (contains good/ and defect/ subfolders)"
  
+  _VALID_OPTIMS = ('ADAM', 'ADAMW', 'SGD', 'RMSPROP')
+
   def __post_init__(self):
     for p in [self.SAVE_PATH, self.OUTPUT_PATH]:
       Path(p).mkdir(parents=True, exist_ok=True)
+
+    if self.OPTIM.strip().upper() not in self._VALID_OPTIMS:
+      raise ValueError(
+          f"Config.OPTIM must be one of {self._VALID_OPTIMS} "
+          f"(case-insensitive), got {self.OPTIM!r}.")
  
     ratio_sum = sum(self.SPLIT_RATIOS)
     if not np.isclose(ratio_sum, 1.0, atol=1e-6):
@@ -176,4 +162,3 @@ def set_seed(seed: int = 42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
- 

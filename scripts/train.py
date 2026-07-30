@@ -68,12 +68,22 @@ def main():
     CFG = Config()
     set_seed(CFG.SEED)
 
+    _optim_upper = CFG.OPTIM.strip().upper()
+    if _optim_upper == 'SGD':
+        _optim_detail = (f'  (momentum={CFG.AE_MOMENTUM}, '
+                         f'nesterov={CFG.AE_SGD_NESTEROV and CFG.AE_MOMENTUM > 0})')
+    elif _optim_upper == 'RMSPROP':
+        _optim_detail = (f'  (momentum={CFG.AE_MOMENTUM}, '
+                         f'alpha={CFG.AE_RMSPROP_ALPHA}, eps={CFG.AE_RMSPROP_EPS})')
+    else:
+        _optim_detail = ''
+
     console.print(Panel(
         f'Device        : [bold cyan]{CFG.DEVICE}[/bold cyan]\n'
         f'Backbone      : [bold cyan]ConvNeXt-{CFG.BACKBONE.capitalize()}[/bold cyan]\n'
         f'Color mode    : [bold cyan]{CFG.COLOR_MODE}[/bold cyan]\n'
         f'Loss function : [bold cyan]{CFG.LOSS}[/bold cyan]\n'
-        f'Optimizer     : [bold cyan]{CFG.OPTIM}[/bold cyan]\n'
+        f'Optimizer     : [bold cyan]{CFG.OPTIM}[/bold cyan][cyan]{_optim_detail}[/cyan]\n'
         f'Score method  : [bold cyan]{CFG.SCORE_METHOD}[/bold cyan]\n'
         f'AE monitor    : [bold cyan]{CFG.SCORE_TOPK_PERCENT}[/bold cyan]',
         title='[bold]BACKBONE[/bold]'
