@@ -40,6 +40,60 @@ def grayscale_equalize(img: Image.Image) -> Image.Image:
     return Image.fromarray(equalized_rgb)
 
 
+def _apply_clahe(gray: np.ndarray, clip_limit: float, tile_grid_size: tuple) -> np.ndarray:
+    """Shared CLAHE core used by both grayscale_clahe() and
+    grayscale_equalize_clahe(). Kept as one function so the two callers
+    can never diverge in how CLAHE itself is parameterized/applied.
+    """
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    return clahe.apply(gray)  # [H, W] uint8
+
+
+def grayscale_clahe(
+    img: Image.Image,
+    clip_limit: float = 2.0,
+    tile_grid_size: tuple = (8, 8),
+) -> Image.Image:
+    """Convert an RGB PIL image to grayscale, then apply CLAHE
+    (Contrast Limited Adaptive Histogram Equalization) directly — i.e.
+    WITHOUT a prior global equalizeHist() pass.
+
+    Unlike cv2.equalizeHist (global equalization, can over-amplify noise
+    in near-uniform regions), CLAHE operates on local tiles
+    (tile_grid_size) and clips the histogram at clip_limit before
+    redistributing the clipped count, which bounds noise amplification.
+
+    Output is replicated to 3 channels (RGB) for backbone compatibility,
+    same convention as grayscale_equalize().
+    """
+    gray = np.array(img.convert("L"))                       # [H, W] uint8
+    clahe_out = _apply_clahe(gray, clip_limit, tile_grid_size)
+    clahe_rgb = cv2.cvtColor(clahe_out, cv2.COLOR_GRAY2RGB)
+    return Image.fromarray(clahe_rgb)
+
+
+def grayscale_equalize_clahe(
+    img: Image.Image,
+    clip_limit: float = 2.0,
+    tile_grid_size: tuple = (8, 8),
+) -> Image.Image:
+    """Convert an RGB PIL image to grayscale, apply global equalizeHist(),
+    THEN apply CLAHE on top of the equalized result.
+
+    This composes grayscale_equalize()'s global contrast stretch with a
+    subsequent local/adaptive pass. Note this is a genuinely different
+    signal than grayscale_clahe() (CLAHE alone) — equalizeHist() first
+    changes the global histogram shape CLAHE then operates on, so the two
+    "+CLAHE" modes are not interchangeable and should be treated as
+    distinct ablation arms, not variants of the same thing.
+    """
+    gray = np.array(img.convert("L"))          # [H, W] uint8
+    equalized = cv2.equalizeHist(gray)          # [H, W] uint8, global equalize first
+    clahe_out = _apply_clahe(equalized, clip_limit, tile_grid_size)
+    clahe_rgb = cv2.cvtColor(clahe_out, cv2.COLOR_GRAY2RGB)
+    return Image.fromarray(clahe_rgb)
+
+
 class Grayscale:
     """torchvision-style transform wrapper around `to_grayscale` (no equalization).
 
@@ -66,6 +120,42 @@ class GrayscaleEqualize:
 
     def __repr__(self):
         return f"{self.__class__.__name__}()"
+
+
+class GrayscaleCLAHE:
+    """torchvision-style transform wrapper around `grayscale_clahe`.
+
+    clip_limit / tile_grid_size are bound at construction time (from
+    cfg.CLAHE_CLIP_LIMIT / cfg.CLAHE_TILE_GRID_SIZE in build_transforms())
+    so they can't silently drift from the config the run was recorded with.
+    """
+
+    def __init__(self, clip_limit: float = 2.0, tile_grid_size: tuple = (8, 8)):
+        self.clip_limit = clip_limit
+        self.tile_grid_size = tile_grid_size
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        return grayscale_clahe(img, self.clip_limit, self.tile_grid_size)
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}(clip_limit={self.clip_limit}, "
+                f"tile_grid_size={self.tile_grid_size})")
+
+
+class GrayscaleEqualizeCLAHE:
+    """torchvision-style transform wrapper around `grayscale_equalize_clahe`
+    (global equalizeHist() followed by CLAHE)."""
+
+    def __init__(self, clip_limit: float = 2.0, tile_grid_size: tuple = (8, 8)):
+        self.clip_limit = clip_limit
+        self.tile_grid_size = tile_grid_size
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        return grayscale_equalize_clahe(img, self.clip_limit, self.tile_grid_size)
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}(clip_limit={self.clip_limit}, "
+                f"tile_grid_size={self.tile_grid_size})")
 
 
 def _list_labeled_files(cfg) -> pd.DataFrame:
@@ -373,7 +463,15 @@ def build_transforms(cfg):
             f"the ImageNet-pretrained backbone sees them. This is a known "
             f"domain-shift risk (see Findings 2.10) — interpret color-mode "
             f"ablation results (e.g. E1/E2/E4/E5/E7/E8) with this in mind.")
-    if color_mode == 'GRAYSCALE_EQUALIZATION':
+
+    clahe_clip = getattr(cfg, 'CLAHE_CLIP_LIMIT', 2.0)
+    clahe_tile = getattr(cfg, 'CLAHE_TILE_GRID_SIZE', (8, 8))
+
+    if color_mode == 'GRAYSCALE_EQUALIZATION_CLAHE':
+        color_step = [GrayscaleEqualizeCLAHE(clahe_clip, clahe_tile)]
+    elif color_mode == 'GRAYSCALE_CLAHE':
+        color_step = [GrayscaleCLAHE(clahe_clip, clahe_tile)]
+    elif color_mode == 'GRAYSCALE_EQUALIZATION':
         color_step = [GrayscaleEqualize()]
     elif color_mode == 'GRAYSCALE':
         color_step = [Grayscale()]

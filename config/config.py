@@ -94,12 +94,30 @@ class Config:
   # ระบบจะใช้โหมด grayscale+equalize เสมอ ไม่ว่า USE_GRAYSCALE จะเป็นอะไร
   USE_GRAYSCALE               : bool = False
   USE_GRAYSCALE_EQUALIZATION  : bool = False
- 
+  USE_CLAHE                   : bool = False
+
+  # CLAHE hyperparameters (used only when USE_CLAHE=True), matching
+  # cv2.createCLAHE(clipLimit=..., tileGridSize=...)
+  CLAHE_CLIP_LIMIT       : float = 2.0
+  CLAHE_TILE_GRID_SIZE   : tuple = (8, 8)
+
   @property
   def COLOR_MODE(self) -> str:
-    """โหมดปรับ Image Processing."""
-    if self.USE_GRAYSCALE_EQUALIZATION:
+    """Image Processing.
+
+    Priority (matches build_transforms() in src/data/dataset.py):
+      USE_GRAYSCALE_EQUALIZATION and USE_CLAHE -> GRAYSCALE_EQUALIZATION_CLAHE
+      USE_GRAYSCALE_EQUALIZATION only          -> GRAYSCALE_EQUALIZATION
+      USE_CLAHE only                           -> GRAYSCALE_CLAHE
+      USE_GRAYSCALE only                       -> GRAYSCALE
+      none set                                 -> RGB
+    """
+    if self.USE_GRAYSCALE_EQUALIZATION and self.USE_CLAHE:
+      return 'GRAYSCALE_EQUALIZATION_CLAHE'
+    elif self.USE_GRAYSCALE_EQUALIZATION:
       return 'GRAYSCALE_EQUALIZATION'
+    elif self.USE_CLAHE:
+      return 'GRAYSCALE_CLAHE'
     elif self.USE_GRAYSCALE:
       return 'GRAYSCALE'
     else:
