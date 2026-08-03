@@ -4,6 +4,8 @@ __pycache__/
 *.pyo
 *.pyd
 .pytest_cache/
+run_experiments.py
+run_local.py
 
 # --- Virtual Environment
 .venv/
@@ -14,6 +16,10 @@ env/
 outputs/
 runs/
 logs/
+splits/
+.exp/
+__RESULT__/
+__DATA__/
 
 # --- OS
 .DS_Store
