@@ -20,6 +20,7 @@ splits/
 .exp/
 __RESULT__/
 __DATA__/
+__Report__/
 
 # --- OS
 .DS_Store
