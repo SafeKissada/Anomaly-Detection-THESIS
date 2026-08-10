@@ -60,12 +60,21 @@ def make_pred_df(paths, labels, scores, metrics):
     return df
 
 
-def main():
+def main(cfg: Config = None):
+    """Run the full train -> score -> save pipeline.
+
+    Args:
+      cfg: an already-constructed Config instance to use for this run (e.g.
+        built from CLI arguments by scripts/run_train.py). If omitted
+        (the default), a Config() with the values currently in
+        config/config.py is used, preserving the original
+        `python scripts/train.py` behavior exactly.
+    """
     logger.info(f'Logging to {_log_file}')
 
 
     # ── PHASE 1 — Setup & configuration ──────────────────────────────────────
-    CFG = Config()
+    CFG = cfg if cfg is not None else Config()
     set_seed(CFG.SEED)
 
     _optim_upper = CFG.OPTIM.strip().upper()
