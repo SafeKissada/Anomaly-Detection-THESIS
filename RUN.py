@@ -1,6 +1,5 @@
 import torch
 
-#import scripts.ssim_check as ssim
 import scripts.train as train
 import scripts.visualize as visualize
 from config.config import Config
@@ -87,13 +86,11 @@ Config.__init__ = _patched_init
 
 
 if __name__ == "__main__":
-    print("--- [1/3] เริ่มทำงาน SSIM Check ---")
-    ssim.main()
 
-    print("\n--- [2/3] เริ่มทำงาน Train ---")
+    print("\n--- [1/3] เริ่มทำงาน Train ---")
     train.main()
 
-    print("\n--- [3/3] เริ่มทำงาน Visualize ---")
+    print("\n--- [2/3] เริ่มทำงาน Visualize ---")
     visualize.main()
 
     print("\n✅ เสร็จสิ้นกระบวนการทั้งหมดเรียบร้อย!")
