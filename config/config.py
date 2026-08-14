@@ -31,8 +31,12 @@ class Config:
   EXPERIMENT : str          = 'ConvNeXt_AutoEncoder_Anomaly'
   # ── ConvNeXt backbone ───────────────────────────────────────────
   LOSS         : str            = 'MSE'
-  SSIM_WEIGHT  : float          = 0.5
   MSE_WEIGHT   : float          = 0.5
+  # Weight ของ cosine term ใน CosineMSELoss (LOSS='COS_MSE'):
+  #   loss = COS_LAM * cosine_distance + (1 - COS_LAM) * mse
+  # lam=1.0 = pure cosine, lam=0.0 = pure MSE. ไม่ถูกใช้เมื่อ LOSS อื่น
+  # (รวมถึง LOSS='COS' ซึ่งเป็น pure cosine เสมอ ไม่มี weight ให้ปรับ)
+  COS_LAM      : float          = 0.5
   # Threshold (delta) at which nn.HuberLoss switches from quadratic (like
   # MSE, for |error| < delta) to linear (like MAE, for |error| >= delta)
   # behavior. Only used when cfg.LOSS is 'HUBER'/'SMOOTH_L1'.
@@ -127,6 +131,12 @@ class Config:
  
   _VALID_OPTIMS = ('ADAM', 'ADAMW', 'SGD', 'RMSPROP')
 
+  # ต้องตรงกับทุก alias ที่ src/losses.py:get_criterion() รู้จักจริง —
+  # ถ้าเพิ่ม loss ใหม่ใน get_criterion() ต้องเพิ่มที่นี่ด้วย ไม่งั้น Config()
+  # จะ reject ค่าที่ get_criterion() รองรับอยู่แล้ว
+  _VALID_LOSSES = ('MSE', 'MAE', 'L1', 'HUBER', 'SMOOTH_L1', 'SMOOTHL1',
+                    'COS', 'COS_MSE', 'COS+MSE', 'COSMSE')
+
   def __post_init__(self):
     for p in [self.SAVE_PATH, self.OUTPUT_PATH]:
       Path(p).mkdir(parents=True, exist_ok=True)
@@ -135,6 +145,14 @@ class Config:
       raise ValueError(
           f"Config.OPTIM must be one of {self._VALID_OPTIMS} "
           f"(case-insensitive), got {self.OPTIM!r}.")
+
+    if self.LOSS.strip().upper() not in self._VALID_LOSSES:
+      raise ValueError(
+          f"Config.LOSS must be one of {self._VALID_LOSSES} "
+          f"(case-insensitive), got {self.LOSS!r}. This is checked eagerly "
+          f"here (fail-fast, like Config.OPTIM) instead of letting a typo "
+          f"propagate silently until src/losses.py:get_criterion() raises "
+          f"mid-training in scripts/train.py.")
  
     ratio_sum = sum(self.SPLIT_RATIOS)
     if not np.isclose(ratio_sum, 1.0, atol=1e-6):

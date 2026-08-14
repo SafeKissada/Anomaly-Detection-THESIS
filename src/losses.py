@@ -80,6 +80,61 @@ class CombinedLoss(nn.Module):
     return self.alpha * ssim_map + self.beta * mse_map
 
 
+class CosineLoss(nn.Module):
+  """Per-pixel cosine distance across the channel axis.
+
+  Reconstruct feature maps live in (B, C, H, W); at each spatial position
+  (h, w) the C-length vector is treated as one direction. Unlike SSIM this
+  needs no data_range/luminance assumption, so it's stationary across
+  training regardless of how the z-scored feature values drift.
+
+  Caveat: scale-invariant by construction -- alone it never penalizes the
+  decoder for drifting the output norm away from the input's, only the
+  direction. Prefer CosineMSELoss unless that's specifically what you want.
+  """
+
+  def __init__(self, eps: float = 1e-8):
+    super().__init__()
+    self.eps = eps
+
+  def _cosine_distance_map(self, recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    cos_sim = F.cosine_similarity(recon, target, dim=1, eps=self.eps)  # (B, H, W)
+    return 1.0 - cos_sim
+
+  def forward(self, recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    return self._cosine_distance_map(recon, target).mean()
+
+  def dissimilarity_map(self, recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    return self._cosine_distance_map(recon, target)
+
+
+class CosineMSELoss(nn.Module):
+  """Cosine distance (direction / cross-channel activation pattern) combined
+  with MSE (magnitude) -- the MSE term is what keeps CosineLoss's scale
+  invariance from letting the decoder's output norm drift unpenalized.
+
+  lam=1.0 reduces to pure cosine, lam=0.0 reduces to pure MSE.
+  """
+
+  def __init__(self, lam: float = 0.5, eps: float = 1e-8):
+    super().__init__()
+    assert 0.0 <= lam <= 1.0, "lam must be in [0, 1]"
+    self.lam = lam
+    self.eps = eps
+    self.cosine = CosineLoss(eps=eps)
+    self.mse = nn.MSELoss()
+
+  def forward(self, recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    cos_term = self.cosine._cosine_distance_map(recon, target).mean()
+    mse_term = self.mse(recon, target)
+    return self.lam * cos_term + (1.0 - self.lam) * mse_term
+
+  def dissimilarity_map(self, recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    cos_map = self.cosine._cosine_distance_map(recon, target)  # (B, H, W)
+    mse_map = ((target - recon) ** 2).mean(dim=1)              # (B, H, W)
+    return self.lam * cos_map + (1.0 - self.lam) * mse_map
+
+
 def _huber_elementwise(diff: torch.Tensor, delta: float) -> torch.Tensor:
   """Per-element Huber loss (before any reduction), matching nn.HuberLoss's
   own formula exactly:
@@ -107,9 +162,17 @@ def get_criterion(cfg) -> nn.Module:
     return nn.HuberLoss(delta=cfg.HUBER_DELTA)
   elif loss_name in ('SSIM_MSE', 'SSIM+MSE', 'SSIMMSE'):
     return CombinedLoss(alpha=cfg.SSIM_WEIGHT, beta=cfg.MSE_WEIGHT)
+  elif loss_name == 'COS':
+    return CosineLoss()
+  elif loss_name in ('COS_MSE', 'COS+MSE', 'COSMSE'):
+    # cfg.COS_LAM ไม่มีใน Config ปัจจุบัน — ใส่ getattr กัน AttributeError
+    # ไว้ก่อน ถ้าจะ ablation ค่า lam จริงต้องเพิ่ม field นี้ใน config.py
+    # (พร้อม whitelist 'COS'/'COS_MSE' ใน __post_init__ ด้วย ไม่งั้น
+    # Config จะ raise ตั้งแต่ก่อนถึง get_criterion())
+    return CosineMSELoss(lam=getattr(cfg, 'COS_LAM', 0.5))
   else:
     raise ValueError(f"Unknown cfg.LOSS: {cfg.LOSS!r} (expected 'MSE', 'MAE', "
-                     f"'HUBER', 'SSIM', or 'SSIM_MSE')")
+                     f"'HUBER', 'SSIM', 'SSIM_MSE', 'COS', or 'COS_MSE')")
 
 
 def elementwise_error_map(feats: torch.Tensor, recon: torch.Tensor, criterion: nn.Module) -> torch.Tensor:
@@ -118,7 +181,7 @@ def elementwise_error_map(feats: torch.Tensor, recon: torch.Tensor, criterion: n
   threshold reported would silently be computed from a different error
   metric than the one the model was optimized for.
   """
-  if isinstance(criterion, (SSIMLoss, CombinedLoss)):
+  if isinstance(criterion, (SSIMLoss, CombinedLoss, CosineLoss, CosineMSELoss)):
     return criterion.dissimilarity_map(recon, feats)
   elif isinstance(criterion, nn.L1Loss):
     return (feats - recon).abs().mean(dim=1)

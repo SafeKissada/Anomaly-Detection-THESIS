@@ -9,7 +9,7 @@ from scipy.ndimage import gaussian_filter
 from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
-from src.losses import SSIMLoss, CombinedLoss, get_criterion, elementwise_error_map, _huber_elementwise
+from src.losses import get_criterion, elementwise_error_map
 from src.optimes import get_optimizer
 
 
@@ -260,16 +260,26 @@ def process_single_heatmap(
     out_size     :  Tuple[int,int],
     criterion    :  nn.Module = None
 ) -> Tuple[np.ndarray, np.ndarray]:
-    if criterion is not None and isinstance(criterion, (SSIMLoss, CombinedLoss)):
-      err_map = criterion.dissimilarity_map(
-          recon_t.unsqueeze(0), feat_t.unsqueeze(0)
+    if criterion is not None:
+      # Route through the SAME elementwise_error_map() that
+      # train_autoencoder()'s validation pass uses to compute val_auroc
+      # (the signal EarlyStopping/checkpoint selection is based on).
+      #
+      # This used to be a second, independently-maintained isinstance
+      # chain here. That meant adding a new loss (e.g. CosineLoss /
+      # CosineMSELoss) to elementwise_error_map() alone would NOT
+      # propagate to this function -- score_dataset_split() would then
+      # silently fall through to the plain-MSE branch below while the
+      # model was actually trained and checkpoint-selected on a
+      # different criterion. That's the exact failure mode
+      # elementwise_error_map()'s own docstring warns about, just
+      # reintroduced via a second copy of the dispatch logic. Delegating
+      # here removes the second copy so both call-sites can never diverge.
+      err_map = elementwise_error_map(
+          feat_t.unsqueeze(0), recon_t.unsqueeze(0), criterion
       ).squeeze(0).numpy()
-    elif criterion is not None and isinstance(criterion, nn.L1Loss):
-      err_map = (feat_t - recon_t).abs().mean(dim=0).numpy()
-    elif criterion is not None and isinstance(criterion, nn.HuberLoss):
-      err_map = _huber_elementwise(feat_t - recon_t, criterion.delta).mean(dim=0).numpy()
     else:
-      # Default / nn.MSELoss case.
+      # No criterion supplied (kept for backward compatibility) -> plain MSE.
       err_map = ((feat_t - recon_t) ** 2).mean(dim=0).numpy()
 
     raw_map = upsample_and_smooth(err_map, sigma=sigma, out_size=out_size)

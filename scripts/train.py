@@ -105,8 +105,8 @@ def main(cfg: Config = None):
         f'IMAGE         : [bold white]{CFG.IMAGE_SIZE}[/bold white]\n'
         f'BRIGHTNESS    : [bold white]{CFG.AUG_COLOR_JITTER }[/bold white]\n'
         f'MSE WEIGHT    : [bold white]{CFG.MSE_WEIGHT}[/bold white]\n'
-        f'SSIM WEIGHT   : [bold white]{CFG.SSIM_WEIGHT}[/bold white]\n'
         f'HUBER DELTA   : [bold white]{CFG.HUBER_DELTA}[/bold white]\n'
+        f'COS LAM       : [bold white]{CFG.COS_LAM}[/bold white]\n'
         f'BATCH SIZE    : [bold white]{CFG.BATCH_SIZE}[/bold white]\n'
         f'EPOCHS        : [bold white]{CFG.AE_EPOCHS}[/bold white]\n'
         f'LR            : [bold white]{CFG.AE_LR}[/bold white]\n'
@@ -269,12 +269,12 @@ def main(cfg: Config = None):
         'best_val_auroc' : float(history['val_auroc'][best_ep]),
         'dropped_ambiguous_or_unlabelled_per_split': dropped_counts,
         # Full snapshot of every Config field used for this run (LOSS,
-        # HUBER_DELTA, SSIM_WEIGHT/MSE_WEIGHT, all AE_* hyperparameters,
-        # SCORE_METHOD, SPLIT_RATIOS, SEED, color mode, etc.) — makes this
-        # results file self-documenting so experiments (e.g. E0 vs E1 vs E2)
-        # can be told apart later purely from their own final_results.json,
-        # without needing to separately track down which config.py values
-        # were in effect when each one was run.
+        # HUBER_DELTA, MSE_WEIGHT, COS_LAM, all AE_*
+        # hyperparameters, SCORE_METHOD, SPLIT_RATIOS, SEED, color mode,
+        # etc.) — makes this results file self-documenting so experiments
+        # (e.g. E0 vs E1 vs E2) can be told apart later purely from their
+        # own final_results.json, without needing to separately track down
+        # which config.py values were in effect when each one was run.
         'config': io_utils.config_to_serializable_dict(CFG),
         'results': {
             split: {k: float(v) for k,v in m.items()
