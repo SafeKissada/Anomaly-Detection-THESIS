@@ -115,7 +115,7 @@ class Config:
 
   SCORE_METHOD          : str   = 'topk'
   SCORE_TOPK_PERCENT    : float = 10.0
-  AE_MONITOR            : str   = 'val_auroc'
+  AE_MONITOR            : str   = 'val_loss'
   USE_AUGMENTATION      : bool  = False
   AUG_COLOR_JITTER      : float = 0.20
 

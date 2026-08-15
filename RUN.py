@@ -56,7 +56,7 @@ OVERRIDES = dict(
     THRESHOLD_PERCENTILE=95.0,                  # percentile ของ val-normal score ที่ใช้เป็น threshold
     SCORE_METHOD='topk',                        # mean | max | topk
     SCORE_TOPK_PERCENT=10.0,                    # ใช้เมื่อ SCORE_METHOD='topk'
-    AE_MONITOR='val_auroc',                     # val_auroc | val_loss_normal | val_loss
+    AE_MONITOR='val_loss',                     # val_auroc | val_loss_normal | val_loss
     USE_AUGMENTATION=True,
     AUG_COLOR_JITTER=0.20,
 
