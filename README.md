@@ -1,4 +1,6 @@
-# Anomaly Detection THESI
+# Anomaly Detection THESIS
+
+🇹🇭 [ภาษาไทย](#ภาษาไทย) | 🇬🇧 [English](#english)
 
 ## English
 
@@ -128,10 +130,6 @@ Artifacts are written under `Config.SAVE_PATH` (checkpoints/logs) and `Config.OU
 - Trained autoencoder checkpoint (`.pth`)
 
 Console output also prints a live-updating results table (AUC-ROC, Average Precision, Accuracy, Precision, Recall, F1) for validation and test splits.
-
-
-
-🇹🇭 [ภาษาไทย](#ภาษาไทย) | 🇬🇧 [English](#english)
 
 
 ---
@@ -329,4 +327,3 @@ split ด้วย
 
 
 ---
-
