@@ -42,6 +42,27 @@ def compute_metrics(scores: np.ndarray, y_true: np.ndarray, threshold: float) ->
     # residual_fcr: of the images the system flags as anomalous, the fraction that were actually good (false alarms)
     residual_fcr = float(fp / (fp + tp)) if (fp + tp) > 0 else float('nan')
 
+    # นับ confusion matrix แบบ 4 ช่อง เขียนเป็น (actual, predicted) โดย
+    # T=anomaly (label 1), F=normal (label 0) — ตัวหน้าคือค่าจริง ตัวหลัง
+    # คือค่าที่โมเดลทำนาย:
+    #   TT = actual anomaly, predicted anomaly   -> True Positive  (tp)
+    #   TF = actual anomaly, predicted normal    -> False Negative (fn)
+    #   FT = actual normal,  predicted anomaly   -> False Positive (fp)
+    #   FF = actual normal,  predicted normal    -> True Negative  (tn)
+    # แปลงเป็น int ธรรมดา (ไม่ใช่ numpy int64) ให้ json.dump() serialize
+    # ได้ตรงๆ โดยไม่ต้อง custom encoder
+    #
+    # 4-way confusion matrix counts, written as (actual, predicted) where
+    # T=anomaly (label 1), F=normal (label 0) — first letter is ground
+    # truth, second is the model's prediction:
+    #   TT = actual anomaly, predicted anomaly   -> True Positive  (tp)
+    #   TF = actual anomaly, predicted normal    -> False Negative (fn)
+    #   FT = actual normal,  predicted anomaly   -> False Positive (fp)
+    #   FF = actual normal,  predicted normal    -> True Negative  (tn)
+    # Cast to plain int (not numpy int64) so json.dump() can serialize
+    # them directly without a custom encoder.
+    tt, tf, ft, ff = int(tp), int(fn), int(fp), int(tn)
+
     return dict(
         auc=auc, ap=ap,
         acc      = float(accuracy_score(gt, pred)),
@@ -49,6 +70,7 @@ def compute_metrics(scores: np.ndarray, y_true: np.ndarray, threshold: float) ->
         recall   = float(recall_score(gt, pred, zero_division=0)),
         f1       = float(f1_score(gt, pred, zero_division=0)),
         cm       = cm,
+        tt=tt, tf=tf, ft=ft, ff=ff,
         auto_clear_rate = auto_clear_rate,
         escape_rate     = escape_rate,
         residual_fcr    = residual_fcr,
