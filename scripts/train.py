@@ -104,7 +104,6 @@ def main(cfg: Config = None):
         f'SEED          : [bold white]{CFG.SEED}[/bold white]\n'
         f'IMAGE         : [bold white]{CFG.IMAGE_SIZE}[/bold white]\n'
         f'BRIGHTNESS    : [bold white]{CFG.AUG_COLOR_JITTER }[/bold white]\n'
-        f'MSE WEIGHT    : [bold white]{CFG.MSE_WEIGHT}[/bold white]\n'
         f'HUBER DELTA   : [bold white]{CFG.HUBER_DELTA}[/bold white]\n'
         f'COS LAM       : [bold white]{CFG.COS_LAM}[/bold white]\n'
         f'BATCH SIZE    : [bold white]{CFG.BATCH_SIZE}[/bold white]\n'
@@ -269,7 +268,7 @@ def main(cfg: Config = None):
         'best_val_auroc' : float(history['val_auroc'][best_ep]),
         'dropped_ambiguous_or_unlabelled_per_split': dropped_counts,
         # Full snapshot of every Config field used for this run (LOSS,
-        # HUBER_DELTA, MSE_WEIGHT, COS_LAM, all AE_*
+        # HUBER_DELTA, COS_LAM, all AE_*
         # hyperparameters, SCORE_METHOD, SPLIT_RATIOS, SEED, color mode,
         # etc.) — makes this results file self-documenting so experiments
         # (e.g. E0 vs E1 vs E2) can be told apart later purely from their

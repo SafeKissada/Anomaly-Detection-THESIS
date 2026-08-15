@@ -31,12 +31,15 @@ class Config:
   EXPERIMENT : str          = 'ConvNeXt_AutoEncoder_Anomaly'
   # ── ConvNeXt backbone ───────────────────────────────────────────
   LOSS         : str            = 'MSE'
-  MSE_WEIGHT   : float          = 0.5
   # Weight ของ cosine term ใน CosineMSELoss (LOSS='COS_MSE'):
   #   loss = COS_LAM * cosine_distance + (1 - COS_LAM) * mse
   # lam=1.0 = pure cosine, lam=0.0 = pure MSE. ไม่ถูกใช้เมื่อ LOSS อื่น
   # (รวมถึง LOSS='COS' ซึ่งเป็น pure cosine เสมอ ไม่มี weight ให้ปรับ)
   COS_LAM      : float          = 0.5
+  # Stability epsilon ของ F.cosine_similarity (ป้องกันหารด้วยศูนย์เมื่อ
+  # feature vector ที่ตำแหน่งใดตำแหน่งหนึ่งมี norm ใกล้ 0). ใช้เมื่อ
+  # LOSS='COS'/'COS_MSE'. ปกติไม่ต้องปรับ แต่เปิดให้ ablate ได้เผื่อจำเป็น.
+  COS_EPS          : float       = 1e-8
   # Threshold (delta) at which nn.HuberLoss switches from quadratic (like
   # MSE, for |error| < delta) to linear (like MAE, for |error| >= delta)
   # behavior. Only used when cfg.LOSS is 'HUBER'/'SMOOTH_L1'.
