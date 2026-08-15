@@ -1,4 +1,8 @@
 """
+Data pipeline: สแกนโฟลเดอร์ good/defect, แบ่ง train/val/test แบบ
+good(3-way)/defect(2-way), คลาส AnomalyDataset, image transform, และ
+DataLoader factory
+
 Data pipeline: good/defect directory scanning, the good(3-way)/defect(2-way)
 train/val/test split, the AnomalyDataset, image transforms, and DataLoader
 factory.
@@ -20,28 +24,43 @@ logger = logging.getLogger("ConvNeXtAutoencoder")
 
 
 def to_grayscale(img: Image.Image) -> Image.Image:
-    """Convert an RGB PIL image to grayscale (no equalization), replicated
+    """แปลงภาพ PIL แบบ RGB เป็น grayscale (ไม่ equalize) แล้ว replicate
+    กลับเป็น 3 channel (RGB) เพื่อให้ยังใช้กับ backbone ที่ pretrain มา
+    แบบ 3-channel ได้
+
+    Convert an RGB PIL image to grayscale (no equalization), replicated
     back into 3 channels (RGB) so it stays compatible with a pretrained
-    3-channel backbone."""
-    gray = img.convert("L")             # [H, W] single channel
+    3-channel backbone.
+    """
+    gray = img.convert("L")             # [H, W] channel เดียว / single channel
     return gray.convert("RGB")          # replicate L -> R=G=B
 
 
 def grayscale_equalize(img: Image.Image) -> Image.Image:
-    """Convert an RGB PIL image to grayscale then apply histogram equalization.
+    """แปลงภาพ PIL แบบ RGB เป็น grayscale แล้วทำ histogram equalization
+
+    channel เดียวที่ equalize แล้วถูก replicate กลับเป็น 3 channel (RGB)
+    เพื่อให้ output ยังใช้กับ backbone ที่ pretrain มาแบบ 3-channel ได้
+    (เช่น ConvNeXt ต้องการ input 3-channel + ImageNet normalization)
+
+    Convert an RGB PIL image to grayscale then apply histogram equalization.
 
     The single equalized channel is replicated back into 3 channels (RGB) so
     the output stays compatible with a pretrained 3-channel backbone
     (e.g. ConvNeXt expects 3-channel input + ImageNet normalization).
     """
     gray = np.array(img.convert("L"))          # [H, W] uint8
-    equalized = cv2.equalizeHist(gray)          # [H, W] uint8, contrast-stretched
+    equalized = cv2.equalizeHist(gray)          # [H, W] uint8, contrast ถูกยืดแล้ว / contrast-stretched
     equalized_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
     return Image.fromarray(equalized_rgb)
 
 
 def _apply_clahe(gray: np.ndarray, clip_limit: float, tile_grid_size: tuple) -> np.ndarray:
-    """Shared CLAHE core used by both grayscale_clahe() and
+    """แกนกลางของ CLAHE ที่ใช้ร่วมกันทั้ง grayscale_clahe() กับ
+    grayscale_equalize_clahe() แยกเป็นฟังก์ชันเดียว เพื่อให้สองจุดเรียก
+    ไม่มีทาง parameterize/apply CLAHE ต่างกันเงียบๆ
+
+    Shared CLAHE core used by both grayscale_clahe() and
     grayscale_equalize_clahe(). Kept as one function so the two callers
     can never diverge in how CLAHE itself is parameterized/applied.
     """
@@ -54,7 +73,19 @@ def grayscale_clahe(
     clip_limit: float = 2.0,
     tile_grid_size: tuple = (8, 8),
 ) -> Image.Image:
-    """Convert an RGB PIL image to grayscale, then apply CLAHE
+    """แปลงภาพ PIL แบบ RGB เป็น grayscale แล้วทำ CLAHE (Contrast Limited
+    Adaptive Histogram Equalization) ตรงๆ เลย — คือ**ไม่ผ่าน**
+    equalizeHist() แบบ global มาก่อน
+
+    ต่างจาก cv2.equalizeHist (equalize แบบ global อาจขยาย noise ในบริเวณ
+    ที่ค่าใกล้เคียงกันมากเกินไป) CLAHE ทำงานบน tile ย่อยในพื้นที่
+    (tile_grid_size) และ clip histogram ที่ clip_limit ก่อนกระจายค่าที่ถูก
+    clip กลับไป ทำให้ noise ไม่ถูกขยายเกินขอบเขต
+
+    Output ถูก replicate เป็น 3 channel (RGB) เพื่อให้ใช้กับ backbone ได้
+    ตาม convention เดียวกับ grayscale_equalize()
+
+    Convert an RGB PIL image to grayscale, then apply CLAHE
     (Contrast Limited Adaptive Histogram Equalization) directly — i.e.
     WITHOUT a prior global equalizeHist() pass.
 
@@ -77,7 +108,17 @@ def grayscale_equalize_clahe(
     clip_limit: float = 2.0,
     tile_grid_size: tuple = (8, 8),
 ) -> Image.Image:
-    """Convert an RGB PIL image to grayscale, apply global equalizeHist(),
+    """แปลงภาพ PIL แบบ RGB เป็น grayscale, ทำ equalizeHist() แบบ global
+    ก่อน **แล้วค่อย**ทำ CLAHE ต่อบนผลลัพธ์ที่ equalize แล้ว
+
+    นี่คือการรวม global contrast stretch ของ grayscale_equalize() เข้ากับ
+    การปรับแบบ local/adaptive ต่ออีกชั้น ข้อควรระวัง: สัญญาณนี้**ต่างจาก**
+    grayscale_clahe() (CLAHE เดี่ยวๆ) จริงๆ เพราะ equalizeHist() เปลี่ยน
+    รูปร่าง histogram แบบ global ไปก่อนที่ CLAHE จะมาทำงานต่อ สอง โหมด
+    "+CLAHE" นี้จึงใช้แทนกันไม่ได้ ต้องมองเป็นแขนของ ablation คนละแขนกัน
+    ไม่ใช่ variant ของสิ่งเดียวกัน
+
+    Convert an RGB PIL image to grayscale, apply global equalizeHist(),
     THEN apply CLAHE on top of the equalized result.
 
     This composes grayscale_equalize()'s global contrast stretch with a
@@ -88,14 +129,19 @@ def grayscale_equalize_clahe(
     distinct ablation arms, not variants of the same thing.
     """
     gray = np.array(img.convert("L"))          # [H, W] uint8
-    equalized = cv2.equalizeHist(gray)          # [H, W] uint8, global equalize first
+    equalized = cv2.equalizeHist(gray)          # [H, W] uint8, equalize แบบ global ก่อน / global equalize first
     clahe_out = _apply_clahe(equalized, clip_limit, tile_grid_size)
     clahe_rgb = cv2.cvtColor(clahe_out, cv2.COLOR_GRAY2RGB)
     return Image.fromarray(clahe_rgb)
 
 
 class Grayscale:
-    """torchvision-style transform wrapper around `to_grayscale` (no equalization).
+    """ตัวห่อ transform สไตล์ torchvision รอบ `to_grayscale` (ไม่ equalize)
+
+    ใส่เข้าไปใน pipeline `v2.Compose([...])` ได้เลย (ทำงานกับภาพ PIL
+    เลยต้องวางไว้**ก่อน** `v2.ToImage()` / `v2.ToDtype()` / `v2.Normalize()`)
+
+    torchvision-style transform wrapper around `to_grayscale` (no equalization).
 
     Insert into a `v2.Compose([...])` pipeline (operates on PIL images,
     so place it BEFORE `v2.ToImage()` / `v2.ToDtype()` / `v2.Normalize()`).
@@ -109,7 +155,12 @@ class Grayscale:
 
 
 class GrayscaleEqualize:
-    """torchvision-style transform wrapper around `grayscale_equalize`.
+    """ตัวห่อ transform สไตล์ torchvision รอบ `grayscale_equalize`
+
+    ใส่เข้าไปใน pipeline `v2.Compose([...])` ได้เลย (ทำงานกับภาพ PIL
+    เลยต้องวางไว้**ก่อน** `v2.ToImage()` / `v2.ToDtype()` / `v2.Normalize()`)
+
+    torchvision-style transform wrapper around `grayscale_equalize`.
 
     Insert into a `v2.Compose([...])` pipeline (operates on PIL images,
     so place it BEFORE `v2.ToImage()` / `v2.ToDtype()` / `v2.Normalize()`).
@@ -123,7 +174,14 @@ class GrayscaleEqualize:
 
 
 class GrayscaleCLAHE:
-    """torchvision-style transform wrapper around `grayscale_clahe`.
+    """ตัวห่อ transform สไตล์ torchvision รอบ `grayscale_clahe`
+
+    clip_limit / tile_grid_size ถูก bind ไว้ตั้งแต่ตอนสร้าง object (มาจาก
+    cfg.CLAHE_CLIP_LIMIT / cfg.CLAHE_TILE_GRID_SIZE ใน build_transforms())
+    เพื่อไม่ให้ค่าที่ใช้จริงเบี่ยงเบนไปจาก config ที่บันทึกไว้ตอนรัน experiment
+    นั้นแบบเงียบๆ
+
+    torchvision-style transform wrapper around `grayscale_clahe`.
 
     clip_limit / tile_grid_size are bound at construction time (from
     cfg.CLAHE_CLIP_LIMIT / cfg.CLAHE_TILE_GRID_SIZE in build_transforms())
@@ -143,7 +201,10 @@ class GrayscaleCLAHE:
 
 
 class GrayscaleEqualizeCLAHE:
-    """torchvision-style transform wrapper around `grayscale_equalize_clahe`
+    """ตัวห่อ transform สไตล์ torchvision รอบ `grayscale_equalize_clahe`
+    (equalizeHist() แบบ global ตามด้วย CLAHE)
+
+    torchvision-style transform wrapper around `grayscale_equalize_clahe`
     (global equalizeHist() followed by CLAHE)."""
 
     def __init__(self, clip_limit: float = 2.0, tile_grid_size: tuple = (8, 8)):
@@ -159,7 +220,12 @@ class GrayscaleEqualizeCLAHE:
 
 
 def _list_labeled_files(cfg) -> pd.DataFrame:
-    """Scan cfg.DATA_ROOT/{cfg.GOOD_DIRNAME, cfg.DEFECT_DIRNAME}. Label comes
+    """สแกน cfg.DATA_ROOT/{cfg.GOOD_DIRNAME, cfg.DEFECT_DIRNAME} label ได้
+    มาจากว่าไฟล์อยู่ใต้โฟลเดอร์ไหนใน 2 โฟลเดอร์นี้โดยตรง — ไม่มีการเดา
+    keyword จากชื่อไฟล์เลย จึงไม่มีเคส "keyword กำกวม" ที่ต้อง drop เกิดขึ้น
+    (ตัด class ของบั๊กที่บันทึกไว้ใน fix log หัวข้อ 2.8/2.9 ออกไปทั้งหมด)
+
+    Scan cfg.DATA_ROOT/{cfg.GOOD_DIRNAME, cfg.DEFECT_DIRNAME}. Label comes
     directly from which of the two folders a file is under — no filename
     keyword guessing, so there is no "ambiguous keyword" case to drop
     (removes the class of bugs described in the fix log under 2.8/2.9).
@@ -209,13 +275,17 @@ def _list_labeled_files(cfg) -> pd.DataFrame:
 
 
 def _split_good_three_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState) -> dict:
-    """Split the "normal" (good) group_ids into train/val/test using the
+    """แบ่ง group_id ของภาพ "normal" (good) เป็น train/val/test ตาม
+    SPLIT_RATIOS เต็มทั้ง 3 ค่า (เช่น 70/15/15) — นี่คือคลาส**เดียว**ที่จะได้
+    ส่วนแบ่งเข้า train เลย คืนเป็น {group_id: split_name}
+
+    Split the "normal" (good) group_ids into train/val/test using the
     full SPLIT_RATIOS tuple (e.g. 70/15/15). This is the ONLY class that ever
     gets a train share. Returns {group_id: split_name}.
     """
     train_r, val_r, _test_r = ratios
-    group_ids = sorted(sub["group_id"].unique())  # deterministic order first
-    rng.shuffle(group_ids)                         # then seeded shuffle
+    group_ids = sorted(sub["group_id"].unique())  # เรียงลำดับแน่นอนก่อน / deterministic order first
+    rng.shuffle(group_ids)                         # แล้วค่อยสับด้วย seed / then seeded shuffle
     n = len(group_ids)
 
     n_train = int(round(n * train_r))
@@ -232,7 +302,16 @@ def _split_good_three_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState)
 
 
 def _split_defect_two_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState) -> dict:
-    """Split the "anomaly" (defect) group_ids into val/test ONLY.
+    """แบ่ง group_id ของภาพ "anomaly" (defect) เป็น val/test **เท่านั้น**
+
+    ไม่มี branch ไปทาง train เลยแม้แต่นิดเดียว — ฟังก์ชันนี้ไม่มีทาง assign
+    defect group_id ไปที่ "train" ได้ ด้วยโครงสร้างของโค้ดเอง ไม่ใช่แค่
+    config flag ที่เปิด/ปิดได้ สัดส่วน val:test ใช้ส่วน val:test ของ
+    `ratios` แล้ว renormalize ให้รวมเป็น 1 (เพราะ label นี้ไม่มีส่วนแบ่งของ
+    train เลย เช่น (0.70, 0.15, 0.15) -> defect val/test กลายเป็น 50/50)
+    คืนเป็น {group_id: split_name} ค่าเป็นได้แค่ {"val", "test"} เท่านั้น
+
+    Split the "anomaly" (defect) group_ids into val/test ONLY.
 
     There is no train branch here at all — it is not possible for this
     function to assign a defect group_id to "train", by construction, not by
@@ -243,8 +322,8 @@ def _split_defect_two_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState)
     """
     _train_r, val_r, test_r = ratios
     val_share = val_r / (val_r + test_r)
-    group_ids = sorted(sub["group_id"].unique())  # deterministic order first
-    rng.shuffle(group_ids)                         # then seeded shuffle
+    group_ids = sorted(sub["group_id"].unique())  # เรียงลำดับแน่นอนก่อน / deterministic order first
+    rng.shuffle(group_ids)                         # แล้วค่อยสับด้วย seed / then seeded shuffle
     n = len(group_ids)
 
     n_val = int(round(n * val_share))
@@ -258,7 +337,19 @@ def _split_defect_two_way(sub: pd.DataFrame, ratios, rng: np.random.RandomState)
 
 
 def _stratified_group_split(df: pd.DataFrame, ratios, seed: int) -> pd.DataFrame:
-    """Assign each row of `df` (must have 'label' and 'group_id' columns) to
+    """กำหนดให้ทุกแถวของ `df` (ต้องมีคอลัมน์ 'label' กับ 'group_id') ไปอยู่ที่
+    'train' / 'val' / 'test' โดยให้ group_id เดียวกันอยู่ split เดียวกัน
+    ทั้งกลุ่มเสมอ (ดู GROUP_ID_REGEX ด้านบน)
+
+    "good" (normal) กับ "defect" (anomaly) ถูกแบ่งด้วยฟังก์ชันเฉพาะแยกกัน
+    คนละตัว แทนที่จะใช้ loop เดียวที่มี branch ข้างในแบบ generic:
+      - normal -> _split_good_three_way()  (train + val + test)
+      - anomaly -> _split_defect_two_way() (val + test เท่านั้น ไม่มี train เลย)
+    ทำให้ "defect ห้ามเข้า train เด็ดขาด" เป็นคุณสมบัติเชิงโครงสร้างที่ผูกกับ
+    ว่าแถว defect ถูกส่งไปฟังก์ชันไหน ไม่ใช่ runtime condition ที่ flag
+    หลงเหลือสักตัวจะไปปิดได้
+
+    Assign each row of `df` (must have 'label' and 'group_id' columns) to
     'train' / 'val' / 'test', keeping every group_id entirely inside a
     single split (see GROUP_ID_REGEX above).
 
@@ -289,7 +380,13 @@ def _stratified_group_split(df: pd.DataFrame, ratios, seed: int) -> pd.DataFrame
 
 
 def _assert_no_defect_in_train(full_df: pd.DataFrame, cache_path: Path) -> None:
-    """Hard safety net: raise (never just warn) if any defect/anomaly file
+    """ตาข่ายนิรภัยตัวสุดท้าย: raise (ไม่ใช่แค่ warn) ถ้ามีไฟล์ defect/anomaly
+    หลุดเข้าไปอยู่ใน train split ไม่ว่า split นั้นจะเพิ่งคำนวณสดๆ หรือโหลด
+    มาจาก cache file (ที่อาจเก่าหรือถูกแก้มือ) ก็ตาม ภาพ defect ต้องไม่ถูก
+    ใช้เทรนหรือใช้เป็น scoring-as-train ได้เด็ดขาด ไม่มี config flag ไหน
+    bypass เช็คนี้ได้
+
+    Hard safety net: raise (never just warn) if any defect/anomaly file
     ended up in the train split, whether the split was just computed or
     loaded from a (possibly stale/hand-edited) cache file. Defect images
     must never be usable for training or scoring-as-train — there is no
@@ -308,7 +405,35 @@ def _assert_no_defect_in_train(full_df: pd.DataFrame, cache_path: Path) -> None:
 
 
 def scan_and_split(cfg) -> dict:
-    """Build the train/val/test DataFrames from cfg.DATA_ROOT/{good,defect},
+    """สร้าง DataFrame train/val/test จาก cfg.DATA_ROOT/{good,defect} ด้วย
+    การแบ่งแบบ seed-based เฉพาะต่อ class ที่ถูก cache ไว้ที่
+    cfg.SPLIT_CACHE_PATH
+
+    แทนที่ workflow เก่าที่ต้องแยกภาพลงโฟลเดอร์ train/, val/, test/ ด้วยมือ
+    ข้อดี:
+      - label มาจากชื่อโฟลเดอร์ good/ vs defect/ โดยตรง ไม่ใช่การเดา
+        keyword ในชื่อไฟล์ -> ตัด bug class "label กำกวม ถูก drop แบบเงียบๆ"
+        ออกไปทั้งหมด (ไม่มีการ parse keyword เลย)
+      - ภาพ good (normal) ถูกแบ่งเป็น train/val/test (3 ทาง); ภาพ defect
+        (anomaly) ถูกแบ่งเป็นแค่ val/test (2 ทาง) — ผ่านฟังก์ชันเฉพาะแยกกัน
+        คนละตัว (ดู _split_good_three_way() / _split_defect_two_way())
+        แทนที่จะเรียก split ตัวเดียวที่จัดการทั้งสอง class แบบ generic
+        ไฟล์ defect จึงไม่มีทางหลุดเข้า train ได้ตามโครงสร้าง และมีการ
+        ตรวจซ้ำอีกครั้งด้านล่างไม่ว่า split จะเพิ่งคำนวณหรือโหลดจาก cache
+      - การแบ่งทำซ้ำได้จาก seed 1 ตัว + ratio tuple 1 ชุดใน config ->
+        เขียนอธิบายในบท Methodology ได้ในประโยคเดียว แทนที่จะเป็นการจัด
+        โฟลเดอร์ด้วยมือที่ไม่มีเอกสารกำกับ
+      - การแบ่งถูก **cache** ไว้ที่ cfg.SPLIT_CACHE_PATH ตั้งแต่ครั้งแรกที่
+        คำนวณ ทุกครั้งที่เรียกซ้ำ — รวมถึงจาก experiment ablation E0-E8 ตัว
+        อื่น — จะใช้ split ที่ cache ไว้ตัวเดิมเป๊ะ ทำให้ทุก experiment
+        เทียบกันบน train/val/test membership ที่เหมือนกันเป๊ะ (ไม่งั้น
+        ตัว split เองจะกลายเป็น confound ที่ควบคุมไม่ได้ระหว่าง experiment)
+
+    คืนค่า {'train': df, 'val': df, 'test': df} แต่ละอันมีคอลัมน์
+    path/filename/label 'train' มีแต่แถว "normal" (good); 'val'/'test'
+    มีทั้ง "normal" และ "anomaly" ผสมกัน
+
+    Build the train/val/test DataFrames from cfg.DATA_ROOT/{good,defect},
     using a seed-based, class-specific split that is cached at
     cfg.SPLIT_CACHE_PATH.
 
@@ -378,7 +503,18 @@ def scan_and_split(cfg) -> dict:
 
 
 class AnomalyDataset(Dataset):
-    """Returns (normalized_tensor, display_tensor, preproc_display_tensor,
+    """คืนค่า (normalized_tensor, display_tensor, preproc_display_tensor,
+    path, label, (orig_w, orig_h))
+
+    - normalized_tensor      : input ของโมเดล (ImageNet-normalized, ผ่าน color-mode transform แล้ว)
+    - display_tensor         : ภาพ RGB ธรรมดาเสมอ (0..1, ไม่ normalize) —
+                               ใช้โชว์ "ภาพถ่ายจริง" ไม่ว่าจะเลือก color mode ไหน
+    - preproc_display_tensor : ภาพที่ preprocess จริงๆ ก่อนป้อนเข้าโมเดล
+                               (grayscale / grayscale+equalized), 0..1, ไม่ normalize,
+                               ใช้เทียบผลด้วยตา ถ้าไม่ตั้ง color-mode transform ไว้
+                               (โหมด RGB) ค่านี้จะเท่ากับ display_tensor
+
+    Returns (normalized_tensor, display_tensor, preproc_display_tensor,
     path, label, (orig_w, orig_h)).
 
     - normalized_tensor      : model input (ImageNet-normalized, color-mode applied)
@@ -400,13 +536,16 @@ class AnomalyDataset(Dataset):
         self.orig_tf = orig_tf
         self.preproc_tf = preproc_tf
         self.image_size = image_size
-        self.n_fallbacks = 0  # running count of successful fallback substitutions
+        self.n_fallbacks = 0  # นับจำนวนครั้งที่ fallback สำเร็จสะสมไว้ / running count of successful fallback substitutions
 
     def __len__(self):
         return len(self.paths)
 
     def _load_one(self, idx):
-        """Load+transform a single sample. Raises on failure (no fallback here)."""
+        """โหลด+transform sample เดียว raise ถ้าล้มเหลว (ไม่มี fallback ในนี้)
+
+        Load+transform a single sample. Raises on failure (no fallback here).
+        """
         path = self.paths[idx]
         label = self.labels[idx]
         with Image.open(path) as img:
@@ -423,6 +562,7 @@ class AnomalyDataset(Dataset):
         except Exception as e:
             logger.error(f"Load failed {self.paths[idx]}: {e}")
 
+        # loop retry แบบมีขอบเขต (แทนที่ fallback แบบ recursive ไม่มีขอบเขตของเดิม)
         # Bounded retry loop (replaces the old unbounded recursive fallback).
         for attempt in range(self.MAX_LOAD_RETRIES):
             random_idx = random.randint(0, len(self) - 1)
@@ -446,7 +586,17 @@ class AnomalyDataset(Dataset):
 
 
 def build_transforms(cfg):
-    """Build the ImageNet-normalized transform (with/without augmentation),
+    """สร้าง transform แบบ ImageNet-normalized (มี/ไม่มี augmentation) และ
+    transform แบบ 'display' เฉยๆ ที่ใช้สำหรับ visualization
+
+    Color mode ควบคุมด้วย cfg.USE_GRAYSCALE / cfg.USE_GRAYSCALE_EQUALIZATION
+    (ดู config.py สำหรับ 3 combination ที่รองรับ: RGB / Grayscale /
+    Grayscale+Equalization) ขั้นตอน color-mode ถูก apply แค่กับ pipeline
+    ที่เป็น input ของโมเดล (imagenet_tf / train_aug_tf) เท่านั้น `display_tf`
+    ที่ใช้ทำ gallery "ภาพต้นฉบับ" ถูกปล่อยไว้ไม่แตะ เพื่อให้ผู้ใช้ยังเห็นภาพ
+    ถ่ายจริงได้ไม่ว่าจะเลือกโหมดไหน
+
+    Build the ImageNet-normalized transform (with/without augmentation),
     and the plain 'display' transform used for visualisation.
 
     Color mode is controlled by cfg.USE_GRAYSCALE / cfg.USE_GRAYSCALE_EQUALIZATION
@@ -513,7 +663,7 @@ def build_transforms(cfg):
             v2.ToDtype(torch.float32, scale=True),
         ])
     else:
-        preproc_display_tf = None  # RGB mode: nothing extra to preview
+        preproc_display_tf = None  # โหมด RGB: ไม่มีอะไรต้อง preview เพิ่ม / RGB mode: nothing extra to preview
 
     return imagenet_tf, train_aug_tf, display_tf, preproc_display_tf
 
@@ -530,7 +680,19 @@ def make_loader(ds, cfg, shuffle: bool = False) -> DataLoader:
 
 
 def build_datasets_and_loaders(cfg):
-    """Build val/test datasets/dataloaders plus the normal-only train loader
+    """สร้าง dataset/dataloader ของ val/test บวก train loader ที่มีแต่ภาพ
+    ปกติ (normal-only) (ตัวเดียวที่ใช้เทรน autoencoder จริง) จาก
+    cfg.DATA_ROOT/{good,defect} ผ่านการแบ่งแบบ cache + seed (ดู
+    scan_and_split())
+
+    ตั้งใจไม่มี Dataset/DataLoader แบบ "train เต็ม" ในนี้: train split มีแต่
+    แถว "normal" (good) ตั้งแต่ต้นอยู่แล้ว (scan_and_split() การันตีว่า
+    defect ไม่มีทางหลุดเข้า train ได้) และไม่มี code path ไหนในโปรเจกต์นี้
+    ต้องการ train-split Dataset/DataLoader อื่นนอกจาก normal_loader ด้านล่าง
+    — การเทรนอ่านแค่ normal_loader และการ scoring/รายงานผลอ่านแค่
+    val_loader/test_loader เท่านั้น
+
+    Build val/test datasets/dataloaders plus the normal-only train loader
     (the only loader ever used for training the autoencoder) from
     cfg.DATA_ROOT/{good,defect}, via a cached, seed-based split (see
     scan_and_split()).

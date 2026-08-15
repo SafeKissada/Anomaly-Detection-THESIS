@@ -1,4 +1,8 @@
-"""Plot functions only — no training, no fitting, no metric computation.
+"""มีแต่ฟังก์ชัน plot เท่านั้น — ไม่มีการเทรน ไม่มีการ fit ไม่มีการคำนวณ
+metric ใดๆ ทั้งสิ้น input ทุกตัวถูกคำนวณไว้ล่วงหน้าแล้วทั้งหมด (history
+dict, metrics dict, scores, heatmaps)
+
+Plot functions only — no training, no fitting, no metric computation.
 All inputs are precomputed (history dict, metrics dicts, scores, heatmaps)."""
 
 import os
@@ -15,9 +19,14 @@ from src.engine import get_best_epoch
 
 
 def plot_class_distribution(split_labels: Dict[str, List[str]], cfg) -> str:
-    """split_labels: {'Validation': [...labels...], 'Test': [...]} (any number
+    """split_labels: {'Validation': [...labels...], 'Test': [...]} (จำนวน
+    split เท่าไหร่ก็ได้ — จำนวน subplot ปรับตาม len(split_labels) ไม่ hardcode
+    ไว้ที่ 3 อีกต่อไป เพราะตอนนี้ train.py ไม่ได้ score train split แล้ว)
+
+    split_labels: {'Validation': [...labels...], 'Test': [...]} (any number
     of splits — subplot count adapts to len(split_labels), it is not
-    hardcoded to 3 anymore now that train.py no longer scores a train split)."""
+    hardcoded to 3 anymore now that train.py no longer scores a train split).
+    """
     n = len(split_labels)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
     axes = np.atleast_1d(axes)
@@ -43,11 +52,22 @@ def plot_class_distribution(split_labels: Dict[str, List[str]], cfg) -> str:
 
 
 def plot_training_history(history: Dict, cfg) -> str:
+    """กราฟ training history 4 แผง: reconstruction loss (val แบบ mixed),
+    reconstruction loss (val แบบ normal-only), validation AUROC, และ
+    learning rate schedule — เส้น "best epoch" ใช้ get_best_epoch() ตัวเดียว
+    กับที่ scripts/train.py ใช้เลือก checkpoint ไม่ maintain นิยามซ้ำ
+
+    4-panel training history plot: mixed-val reconstruction loss,
+    normal-only-val reconstruction loss, validation AUROC, and learning
+    rate schedule — the "best epoch" marker uses the exact same
+    get_best_epoch() that scripts/train.py uses for checkpoint selection,
+    not a separately maintained definition.
+    """
     fig, axes = plt.subplots(1, 4, figsize=(24, 5))
     _monitor = cfg.AE_MONITOR
     best_ep = get_best_epoch(history, _monitor)
 
-    # ── 1. Loss curves ──────────────────────────────────────────────────────
+    # ── 1. Loss curves / กราฟ loss ────────────────────────────────────────
     ax = axes[0]
     ax.plot(history['train_loss'], label='Train Loss (normal only)', color='#2196F3', lw=2)
     ax.plot(history['val_loss'],   label='Val Loss  (mixed normal+anomaly)', color='#FF5722', lw=2, linestyle='--')
@@ -61,7 +81,7 @@ def plot_training_history(history: Dict, cfg) -> str:
     ax.grid(alpha=0.3)
     ax.spines[['top','right']].set_visible(False)
 
-    # ── 2. Normal-only validation loss ──────────────────────────────────────
+    # ── 2. Normal-only validation loss / val loss เฉพาะภาพปกติ ────────────
     ax = axes[1]
     ax.plot(history['val_loss_normal'], label='Val Loss (normal-only)', color='#FF9800', lw=2)
     ax.axvline(best_ep, color='black', linestyle=':', alpha=0.6,
@@ -73,7 +93,7 @@ def plot_training_history(history: Dict, cfg) -> str:
     ax.grid(alpha=0.3)
     ax.spines[['top','right']].set_visible(False)
 
-    # ── 3. Validation AUROC ──────────────────────────────────────────────────
+    # ── 3. Validation AUROC / AUROC ของ validation ─────────────────────────
     ax = axes[2]
     ax.plot(history['val_auroc'], label='Val AUROC', color='#4CAF50', lw=2)
     best_auroc_at_best_ep = history['val_auroc'][best_ep]
@@ -87,7 +107,7 @@ def plot_training_history(history: Dict, cfg) -> str:
     ax.grid(alpha=0.3)
     ax.spines[['top','right']].set_visible(False)
 
-    # ── 4. Learning rate ─────────────────────────────────────────────────────
+    # ── 4. Learning rate / อัตราการเรียนรู้ ──────────────────────────────────
     ax = axes[3]
     ax.plot(history['lr'], color='#9C27B0', lw=2)
     ax.set_title('Learning Rate Schedule', fontsize=13, fontweight='bold')
@@ -110,9 +130,14 @@ def plot_training_history(history: Dict, cfg) -> str:
 
 
 def plot_roc_curves(split_meta, cfg) -> str:
-    """split_meta: list of (name, metrics_dict, color). Subplot count adapts
+    """split_meta: list ของ (name, metrics_dict, color) จำนวน subplot ปรับ
+    ตาม len(split_meta) — ไม่ hardcode ไว้ที่ 3 (ตอนนี้ train.py อาจรายงาน
+    แค่ val/test เท่านั้น)
+
+    split_meta: list of (name, metrics_dict, color). Subplot count adapts
     to len(split_meta) — not hardcoded to 3 (train.py may report only
-    val/test now)."""
+    val/test now).
+    """
     n = len(split_meta)
     fig, axes = plt.subplots(1, n, figsize=(6 * n, 5))
     axes = np.atleast_1d(axes)
@@ -215,7 +240,10 @@ def plot_score_distributions(split_meta, threshold: float, cfg) -> str:
 
 
 def overlay_heatmap(image_np: np.ndarray, heat: np.ndarray, alpha: float = 0.45) -> np.ndarray:
-    """Blend jet-coloured heatmap onto [H,W,3] float [0,1] image."""
+    """ผสม heatmap สี jet เข้ากับภาพ [H,W,3] float [0,1]
+
+    Blend jet-coloured heatmap onto [H,W,3] float [0,1] image.
+    """
     heat_8 = (heat.clip(0,1) * 255).astype(np.uint8)
     heat_color = cv2.applyColorMap(heat_8, cv2.COLORMAP_JET)
     heat_rgb   = cv2.cvtColor(heat_color, cv2.COLOR_BGR2RGB)
@@ -234,7 +262,7 @@ def visualize_heatmaps(
     cfg,
     n_samples : int = 8,
     seed      : int = 42,
-    image_kind: str = 'rgb',   # 'rgb' | 'preproc' — which base image is being shown
+    image_kind: str = 'rgb',   # 'rgb' | 'preproc' — base image ที่ใช้แสดงคือแบบไหน / which base image is being shown
 ) -> None:
     """
     แสดง [Base Image] | Reconstruction Error Map | Heatmap Overlay ต่อภาพ พร้อม
@@ -309,11 +337,18 @@ def visualize_heatmaps(
 
 
 def _get_display_image(split_arrays: Dict[str, Dict], split: str, idx: int, mode: str) -> np.ndarray:
-    """mode='original'        -> real RGB photo, untouched.
+    """mode='original'        -> ภาพ RGB จริง ไม่ผ่านการแก้ไขใดๆ
+    mode='processed'       -> ภาพ RGB จริง + heatmap overlay
+    mode='preproc'         -> ภาพที่ preprocess จริงๆ ก่อนป้อนเข้าโมเดล
+                              (grayscale / grayscale+equalized) ไม่มี overlay
+    mode='preproc_overlay' -> ภาพที่ preprocess แล้ว + heatmap overlay
+
+    mode='original'        -> real RGB photo, untouched.
     mode='processed'       -> real RGB photo + heatmap overlay.
     mode='preproc'         -> the actual preprocessed image fed to the model
                               (grayscale / grayscale+equalized), no overlay.
-    mode='preproc_overlay' -> preprocessed image + heatmap overlay."""
+    mode='preproc_overlay' -> preprocessed image + heatmap overlay.
+    """
     arrs = split_arrays[split]
     orig = arrs['imgs'][idx]
     if mode == 'original':
@@ -355,7 +390,19 @@ def render_image_gallery(
     ncols       : int  = 5,
     random_state: int  = 42,
 ) -> pd.DataFrame:
-    """Contact-sheet style gallery showing ONE kind of image per cell.
+    """Gallery แบบ contact-sheet โชว์ภาพชนิดเดียวต่อ 1 ช่อง แต่ละ thumbnail
+    กำกับด้วย filename, ground-truth, prediction, และ score; สีขอบ =
+    เขียว(ทายถูก)/แดง(ทายผิด)
+
+    ตัวเลือก mode:
+      'original'        : ภาพ RGB ต้นฉบับ ไม่ผ่านการแก้ไข
+      'processed'       : ภาพ RGB + heatmap overlay
+      'preproc'         : ภาพที่ป้อนเข้าโมเดลจริงๆ (grayscale /
+                          grayscale+equalized) — มีความหมายเฉพาะเมื่อ
+                          cfg.COLOR_MODE != 'RGB'
+      'preproc_overlay' : ภาพ preprocessed + heatmap overlay
+
+    Contact-sheet style gallery showing ONE kind of image per cell.
     Each thumbnail is captioned with filename, ground-truth, prediction,
     and score; border colour = green(correct)/red(wrong).
 
@@ -469,6 +516,11 @@ def browse_gallery(
     n          : int  = 6,
     random_state: int = 42,
 ) -> pd.DataFrame:
+    """Gallery 3 คอลัมน์ (ภาพต้นฉบับ | reconstruction error map | heatmap
+    overlay) ต่อ 1 sample — ใช้เจาะดูรายภาพว่าทำไมโมเดลถึงทาย ถูก/ผิด
+    (เทียบกับ render_image_gallery() ที่โชว์ทีละภาพเดียวต่อช่องแบบ
+    contact-sheet)
+    """
     df = df_gallery.copy()
     if split is not None:
         df = df[df['split'] == split]

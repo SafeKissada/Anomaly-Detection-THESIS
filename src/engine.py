@@ -1,3 +1,7 @@
+"""Training loop, EarlyStopping, และ scoring/heatmap pipeline
+
+Training loop, EarlyStopping, and the scoring/heatmap pipeline.
+"""
 import os
 from typing import Dict, List, Tuple
 
@@ -14,6 +18,13 @@ from src.optimes import get_optimizer
 
 
 class EarlyStopping:
+  """หยุดเทรนเมื่อ metric ที่ monitor ไม่ดีขึ้นติดต่อกันเกิน patience epoch
+  พร้อมเซฟ checkpoint ที่ดีที่สุดไว้อัตโนมัติทุกครั้งที่ดีขึ้น
+
+  Stops training once the monitored metric hasn't improved for
+  `patience` consecutive epochs, automatically saving the best
+  checkpoint every time it does improve.
+  """
   def __init__(self,
                patience: int   = 15,
                min_delta: float = 1e-6,
@@ -53,7 +64,24 @@ class EarlyStopping:
 
 
 def get_best_epoch(history: Dict, monitor: str) -> int:
-  """Return the index of the epoch that EarlyStopping would consider "best"
+  """คืน index ของ epoch ที่ EarlyStopping จะถือว่า "ดีที่สุด" ตาม
+  cfg.AE_MONITOR ที่ให้มา โดยใช้กฎ min/max เดียวกันเป๊ะกับ EarlyStopping เอง
+  ('val_auroc' -> max, อย่างอื่น -> min)
+
+  นี่คือนิยาม "best epoch" ที่ใช้ร่วมกันจุดเดียว (SINGLE shared definition)
+  ระหว่าง:
+    - scripts/train.py  (รายงาน best_val_loss / best_val_auroc ฯลฯ ใน
+      final_results.json ที่ epoch ที่ถูกเลือกจริง แทนที่จะเป็น global
+      min/max ข้ามทุก epoch ซึ่งอาจเป็นคนละ epoch กับที่ถูกเลือกจริง)
+    - src/visual.py      (plot_training_history วาดจุด "best epoch"
+      บนกราฟ training curve)
+
+  เดิมโค้ด if/elif/else 3 บรรทัดนี้ถูก duplicate ไว้ใน src/visual.py ตรงๆ
+  ในขณะที่ scripts/train.py ใช้ `min(history['val_loss'])` ข้ามทุก epoch
+  ที่ไม่เกี่ยวข้องกัน (และทำให้เข้าใจผิด) การแยกออกมาเป็นฟังก์ชันนี้กำจัด
+  ความซ้ำซ้อนนั้น และรับประกันว่าทั้งสองจุดเรียกเห็นตรงกันว่า "ดีที่สุด" คืออะไร
+
+  Return the index of the epoch that EarlyStopping would consider "best"
   for the given cfg.AE_MONITOR, using the exact same min/max rule as
   EarlyStopping itself ('val_auroc' -> max, everything else -> min).
 
@@ -79,6 +107,16 @@ def get_best_epoch(history: Dict, monitor: str) -> int:
 
 
 def aggregate_score_torch(error_map: torch.Tensor, cfg) -> torch.Tensor:
+  """รวม error map (batched, บน GPU/CPU tensor) เป็น score เดียวต่อภาพ
+  ตาม cfg.SCORE_METHOD — ใช้ตอนอยากได้ความเร็วแบบ batched (ไม่ผ่าน
+  upsample/blur เต็มรูปแบบ); ดู aggregate_score() ด้านล่างสำหรับเวอร์ชัน
+  numpy ต่อภาพเดียวที่ pipeline การ scoring จริงใช้
+
+  Aggregate a batched error map (torch tensor) into a single per-image
+  score according to cfg.SCORE_METHOD — used when batched speed matters
+  (bypassing the full upsample/blur path); see aggregate_score() below
+  for the per-image numpy version the real scoring pipeline uses.
+  """
   b = error_map.size(0)
   flat = error_map.reshape(b, -1)
   if cfg.SCORE_METHOD == 'mean':
@@ -100,6 +138,13 @@ def train_autoencoder(
     val_loader,
     cfg
 ) -> Dict:
+    """เทรน autoencoder บนภาพปกติ (good) เท่านั้น พร้อม validate ทุก epoch
+    ด้วย pipeline scoring เดียวกับที่ใช้รายงานผลจริง แล้วคืน training history
+
+    Train the autoencoder on normal (good) images only, validating every
+    epoch through the exact same scoring pipeline used for final reported
+    metrics, and return the training history.
+    """
     optimizer = get_optimizer(cfg, ae.parameters())
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=cfg.AE_LR_STEP, gamma=cfg.AE_LR_GAMMA)
     criterion = get_criterion(cfg)
@@ -118,7 +163,7 @@ def train_autoencoder(
                'lr'              : []}
     extractor.eval()
     for epoch in range(1, cfg.AE_EPOCHS + 1):
-      # ── TRAIN ───────────────────────────────────────────────
+      # ── TRAIN / เทรน ────────────────────────────────────────
       ae.train()
       train_loss = 0.0
 
@@ -139,7 +184,7 @@ def train_autoencoder(
         train_loss += loss.item() * b_size
       train_loss /= len(normal_loader.dataset)
 
-      # ── VALIDATION ──────────────────────────────────────────
+      # ── VALIDATION / ตรวจสอบ ──────────────────────────────────
       ae.eval()
       val_loss = 0.0
       normal_loss_sum, normal_loss_n = 0.0, 0
@@ -155,9 +200,21 @@ def train_autoencoder(
 
           v_loss = criterion(recon, feats)
           val_loss += v_loss.item() * feats.size(0)
-          error_map_raw   = elementwise_error_map(feats, recon, criterion)   # [B, H, W] native resolution
-          per_sample_loss = error_map_raw.mean(dim=(1, 2))                    # [B] (diagnostic only, unaffected)
+          error_map_raw   = elementwise_error_map(feats, recon, criterion)   # [B, H, W] ความละเอียดดิบ / native resolution
+          per_sample_loss = error_map_raw.mean(dim=(1, 2))                    # [B] (สำหรับ diagnostic เท่านั้น ไม่กระทบผลอื่น / diagnostic only, unaffected)
 
+          # สำคัญ (แก้ปัญหา train/eval scoring-resolution mismatch):
+          # anomaly score ที่ใช้คำนวณ val_auroc (ตัวขับ EarlyStopping /
+          # การเลือก checkpoint ผ่าน cfg.AE_MONITOR) ต้องคำนวณด้วย
+          # post-processing pipeline ที่เหมือนกันเป๊ะกับ metric สุดท้ายที่
+          # รายงานใน score_dataset_split(): upsample ไปที่ cfg.IMAGE_SIZE,
+          # Gaussian-smooth ด้วย cfg.HEATMAP_SIGMA แล้วรวมด้วย
+          # cfg.SCORE_METHOD เราจึงส่งทุก sample ผ่าน upsample_and_smooth()
+          # + aggregate_score() ที่นี่ แทนที่จะใช้ aggregate_score_torch()
+          # บน raw map ที่ความละเอียดดิบ ทำบน CPU (cv2/scipy ไม่มี batched
+          # GPU version) ซึ่งช้ากว่าเล็กน้อยต่อ epoch แต่กระทบแค่ validation
+          # pass เท่านั้น ไม่กระทบ training forward/backward
+          #
           # IMPORTANT (fix for the train/eval scoring-resolution mismatch):
           # The anomaly score used for val_auroc (which drives EarlyStopping /
           # checkpoint selection via cfg.AE_MONITOR) must be computed with the
@@ -220,7 +277,7 @@ def train_autoencoder(
         print(f'\nEarly stopping at epoch {epoch}  '
               f'(best {monitor}={early_stop.best_score:.6f})')
         break
-    # Load best weights
+    # โหลด weight ที่ดีที่สุดกลับมา / Load best weights
     ae.load_state_dict(torch.load(save_path, map_location=cfg.DEVICE))
     print(f'\n✓ Best autoencoder loaded from {save_path}  (monitor={monitor})')
     return history
@@ -231,7 +288,23 @@ def upsample_and_smooth(
     sigma    : float,
     out_size : Tuple[int, int]
 ) -> np.ndarray:
-    """Resize a native-resolution error map up to out_size then Gaussian-smooth it.
+    """ขยาย error map ความละเอียดดิบขึ้นไปที่ out_size แล้ว Gaussian-smooth
+
+    นี่คือขั้นตอน post-processing ที่ใช้ร่วมกันจุดเดียว (SINGLE shared step)
+    ระหว่าง:
+      (a) การ scoring ตอน validation ระหว่างเทรน (train_autoencoder ->
+          val_auroc ที่ EarlyStopping ใช้เลือก checkpoint) และ
+      (b) การ scoring ครั้งสุดท้าย (score_dataset_split ->
+          process_single_heatmap ที่ใช้รายงาน test/val/train AUC-ROC, F1 ฯลฯ)
+
+    ทั้งสองจุดเรียก**ต้อง**ผ่านฟังก์ชันนี้เป๊ะๆ (ไม่ implement ซ้ำ) เพื่อให้
+    criterion ที่ใช้เลือกโมเดล "ดีที่สุด" เป็นตัวเดียวกันเป๊ะกับที่ใช้รายงาน
+    ผลลัพธ์สุดท้าย การ resize (bilinear) และ Gaussian blur ทั้งคู่เป็น
+    non-linear เทียบกับลำดับ (ranking) เชิงพื้นที่ของค่า error ถ้าคำนวณแค่
+    จุดใดจุดหนึ่งจากสองจุดนี้ จะทำให้ ranking ทั้งสองเบี่ยงเบนออกจากกันเงียบๆ
+    โดยไม่มีการแจ้งเตือน
+
+    Resize a native-resolution error map up to out_size then Gaussian-smooth it.
 
     This is the SINGLE shared post-processing step between:
       (a) training-time validation scoring (train_autoencoder -> val_auroc,
@@ -260,7 +333,27 @@ def process_single_heatmap(
     out_size     :  Tuple[int,int],
     criterion    :  nn.Module = None
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """คำนวณ heatmap ของภาพเดียว (raw + normalized [0,1]) จาก feature กับ
+    reconstruction ของภาพนั้น
+
+    Compute a single image's heatmap (raw + normalized to [0,1]) from its
+    feature map and reconstruction.
+    """
     if criterion is not None:
+      # เรียกผ่าน elementwise_error_map() ตัวเดียวกับที่ train_autoencoder()
+      # ใช้คำนวณ val_auroc ตอน validation (ตัวสัญญาณที่ EarlyStopping/การ
+      # เลือก checkpoint พึ่งพา)
+      #
+      # เดิมจุดนี้เคยมี isinstance chain ของตัวเองแยกต่างหาก ทำให้การเพิ่ม
+      # loss ใหม่ (เช่น CosineLoss / CosineMSELoss) เข้า
+      # elementwise_error_map() เพียงจุดเดียว **ไม่ propagate** มาที่ฟังก์ชัน
+      # นี้ — score_dataset_split() จะตกไปที่ branch plain-MSE ด้านล่าง
+      # เงียบๆ ทั้งที่โมเดลถูกเทรนและเลือก checkpoint ด้วยคนละ criterion
+      # นี่คือ failure mode เดียวกับที่ docstring ของ elementwise_error_map()
+      # เตือนไว้ตรงๆ เพียงแต่เกิดซ้ำผ่าน dispatch logic คนละชุด การเรียกผ่าน
+      # ฟังก์ชันเดียวกันตรงนี้กำจัด copy ที่สองทิ้ง ทำให้สองจุดเรียกเบี่ยงเบน
+      # จากกันไม่ได้อีก (เคยเป็นบั๊กจริงที่พบและแก้ไปแล้ว)
+      #
       # Route through the SAME elementwise_error_map() that
       # train_autoencoder()'s validation pass uses to compute val_auroc
       # (the signal EarlyStopping/checkpoint selection is based on).
@@ -279,6 +372,7 @@ def process_single_heatmap(
           feat_t.unsqueeze(0), recon_t.unsqueeze(0), criterion
       ).squeeze(0).numpy()
     else:
+      # ไม่ได้ส่ง criterion มา (เก็บไว้เพื่อ backward compatibility) -> ใช้ MSE ธรรมดา
       # No criterion supplied (kept for backward compatibility) -> plain MSE.
       err_map = ((feat_t - recon_t) ** 2).mean(dim=0).numpy()
 
@@ -291,6 +385,12 @@ def process_single_heatmap(
 
 
 def aggregate_score(raw_map: np.ndarray, cfg) -> float:
+  """รวม heatmap ของภาพเดียว (numpy array) เป็น anomaly score เดียว
+  ตาม cfg.SCORE_METHOD ('mean' | 'max' | 'topk')
+
+  Aggregate a single image's heatmap (numpy array) into one anomaly
+  score, according to cfg.SCORE_METHOD ('mean' | 'max' | 'topk').
+  """
   if cfg.SCORE_METHOD == 'mean':
     return float(raw_map.mean())
   elif cfg.SCORE_METHOD == 'max':
@@ -311,7 +411,14 @@ def score_dataset_split(
     cfg,
     desc       : str = 'Scoring'
     ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
+  """รัน inference บนทั้ง split (val/test) แล้วคืน score, label, heatmap,
+  และภาพต้นฉบับของทุกภาพในนั้น — นี่คือฟังก์ชันที่ผลิตตัวเลข AUROC/F1/ฯลฯ
+  ที่รายงานเป็นผลสุดท้าย
 
+  Run inference over an entire split (val/test) and return the score,
+  label, heatmap, and original image for every image in it — this is the
+  function that produces the final reported AUROC/F1/etc.
+  """
   extractor.eval()
   ae.eval()
 

@@ -1,4 +1,11 @@
-"""Visualization entry point: loads the artifacts saved by scripts/train.py
+"""จุดเริ่มต้นการ visualize: โหลด artifact ที่ scripts/train.py เซฟไว้
+(history.json, scores_{split}.npz, extractor_norm_stats.pt, threshold.json,
+checkpoint .pth) แล้ว render กราฟ/heatmap ทั้งหมด
+
+ไม่เทรนใหม่, ไม่คำนวณ score ใหม่, ไม่เรียก fit_normalization เลย ถ้า
+artifact ที่ต้องใช้ตัวไหนหายไป จะ raise error บอกให้รัน train.py ก่อน
+
+Visualization entry point: loads the artifacts saved by scripts/train.py
 (history.json, scores_{split}.npz, extractor_norm_stats.pt, threshold.json,
 checkpoint .pth) and renders all plots/heatmaps.
 
@@ -16,7 +23,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('ConvNeXtAutoencoder')
 
-import numpy as np
 import pandas as pd
 import torch
 from rich.console import Console
@@ -38,10 +44,11 @@ console = Console()
 def main():
     CFG = Config()
 
+    # Fail fast ถ้า train.py ยังไม่ได้สร้าง artifact ไว้
     # Fail fast if train.py has not produced the artifacts yet.
     io_utils.require_artifacts(CFG)
 
-    # ── Load everything from disk ─────────────────────────────────────────────
+    # ── Load everything from disk / โหลดทุกอย่างจาก disk ─────────────────────
     history    = io_utils.load_history(CFG)
     thr_info   = io_utils.load_threshold(CFG)
     norm_stats = io_utils.load_norm_stats(CFG)
@@ -64,22 +71,23 @@ def main():
         title='[bold]Artifacts Loaded — rendering plots[/bold]'
     ))
 
-    # ── Metrics from saved scores (no model inference) ────────────────────────
+    # ── Metrics from saved scores (no model inference) ─────────────────────
+    # ── คำนวณ metric จาก score ที่เซฟไว้ (ไม่มีการรัน inference โมเดลใหม่เลย) ─
     metrics = {split: compute_metrics(d['scores'], d['y_true'], threshold)
                for split, d in data.items()}
 
-    # ── EDA: class distribution per split ─────────────────────────────────────
+    # ── EDA: class distribution per split / สัดส่วน class ต่อ split ──────────
     plot_class_distribution({
         'Validation' : data['val']['labels'],
         'Test'       : data['test']['labels'],
     }, CFG)
     print('EDA chart saved.')
 
-    # ── Training history ──────────────────────────────────────────────────────
+    # ── Training history / กราฟ training history ────────────────────────────
     save_file_path = plot_training_history(history, CFG)
     print(f'Training history plot saved successfully at: {save_file_path}')
 
-    # ── ROC / PR / confusion matrices / score distributions ───────────────────
+    # ── ROC / PR / confusion matrices / score distributions ────────────────
     split_meta = [
         ('Validation Set', metrics['val'],   '#4CAF50'),
         ('Test Set',       metrics['test'],  '#FF5722'),
@@ -89,7 +97,7 @@ def main():
     plot_confusion_matrices(split_meta, CFG)
     plot_score_distributions(split_meta, threshold, CFG)
 
-    # ── Heatmaps per split ────────────────────────────────────────────────────
+    # ── Heatmaps per split / heatmap ต่อ split ───────────────────────────────
     for split, split_name in [('val','Validation'), ('test','Test')]:
         d = data[split]
         visualize_heatmaps(
@@ -101,7 +109,7 @@ def main():
                 d['paths'], d['preproc_imgs'], d['heatmaps'], d['labels'],
                 d['scores'], threshold, split_name, CFG, n_samples=20, image_kind='preproc')
 
-    # ── Result gallery ────────────────────────────────────────────────────────
+    # ── Result gallery / gallery สรุปผล ──────────────────────────────────────
     split_arrays = {
         split: dict(paths=d['paths'], labels=d['labels'], scores=d['scores'],
                     hmaps=d['heatmaps'], imgs=d['orig_imgs'],
@@ -138,6 +146,7 @@ def main():
     print('\nจำนวนภาพต่อ split × ผลทาย (ถูก/ผิด):')
     print(df_gallery.groupby(['split', 'correct']).size().unstack(fill_value=0))
 
+    # gallery 3 คอลัมน์ (ภาพต้นฉบับ | error map | overlay) — เฉพาะ sample ที่ทายผิด
     # 3-column gallery (original | error map | overlay) — misclassified samples
     _ = browse_gallery(df_gallery, split_arrays, CFG, split='test', correct=False, n=100)
     _ = browse_gallery(df_gallery, split_arrays, CFG, split='val',  correct=False, n=100)

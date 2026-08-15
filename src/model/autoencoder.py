@@ -1,8 +1,24 @@
+"""Convolutional autoencoder บน feature space (ไม่ใช่ pixel space) — encoder
+บีบ feature ConvNeXt ที่ normalize แล้วลงไปที่ bottleneck แล้ว decoder
+reconstruct กลับมา
+
+Feature-space (not pixel-space) convolutional autoencoder — the encoder
+compresses normalized ConvNeXt features down to a bottleneck, and the
+decoder reconstructs them back.
+"""
 import torch
 import torch.nn as nn
 
 
 class LightCNBlock(nn.Module):
+  """Block สไตล์ ConvNeXt แบบเบา: depthwise conv -> LayerNorm -> MLP (GELU)
+  -> residual connection ใช้ทั้งใน encoder และ decoder เพื่อ refine
+  feature ที่แต่ละ resolution level หลัง downsample/upsample
+
+  A lightweight ConvNeXt-style block: depthwise conv -> LayerNorm -> MLP
+  (GELU) -> residual connection. Used in both the encoder and decoder to
+  refine features at each resolution level after downsampling/upsampling.
+  """
   def __init__(self, dim, expand_ratio = 2, kernel_size = 7, drop_path = 0.0):
     super().__init__()
     hidden_dim = dim * expand_ratio
@@ -24,24 +40,36 @@ class LightCNBlock(nn.Module):
     # x: [B, C, H, W]
     residual = x
     x = self.dwconv(x)
-    x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
+    x = x.permute(0, 2, 3, 1)  # [B, H, W, C] — LayerNorm/Linear ต้องการ channel เป็นแกนสุดท้าย / LayerNorm/Linear expect channel as the last axis
     x = self.norm(x)
     x = self.pwconv1(x)
     x = self.act(x)
     x = self.pwconv2(x)
-    x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
+    x = x.permute(0, 3, 1, 2)  # [B, C, H, W] — กลับไป layout เดิม / back to the original layout
     x = self.drop_path(x)
     return residual + x   # residual connection
 
 
 def count_params(module):
+  """นับจำนวน trainable parameter ทั้งหมดของ module
+
+  Count the total number of trainable parameters in a module.
+  """
   return sum(p.numel() for p in module.parameters() if p.requires_grad)
 
 
 class ConvEncoderWithCNBlock(nn.Module):
+  """Encoder: downsample 3 ครั้ง (stride-2 conv แต่ละครั้ง) จาก in_ch ช่อง
+  ไปถึง bottleneck ช่อง คั่นด้วย LightCNBlock เพื่อ refine feature ที่แต่ละ
+  resolution level
+
+  Encoder: 3 stride-2 downsample stages taking in_ch channels down to the
+  bottleneck, each followed by a LightCNBlock to refine features at that
+  resolution level.
+  """
   def __init__(self, in_ch=576, bottleneck=64):
     super().__init__()
-    mid1, mid2 = in_ch // 2, in_ch // 4 # 288, 144 ตามของเดิม
+    mid1, mid2 = in_ch // 2, in_ch // 4 # 288, 144 ตามของเดิม / 288, 144 as before
 
     self.down1 = nn.Sequential(
         nn.Conv2d(in_ch, mid1, kernel_size=4, stride=2, padding=1, bias=False),
@@ -72,6 +100,16 @@ class ConvEncoderWithCNBlock(nn.Module):
 
 
 class ConvDecoderWithCNBlock(nn.Module):
+  """Decoder: upsample 3 ครั้ง (transposed conv แต่ละครั้ง) จาก bottleneck
+  กลับไปที่ out_ch ช่อง เป็นภาพสะท้อนของ ConvEncoderWithCNBlock — รับ
+  mid1/mid2 มาจาก encoder โดยตรง (ผ่าน FeatureAutoencoder) เพื่อให้
+  channel count ที่แต่ละ resolution level ตรงกันสมมาตร
+
+  Decoder: 3 stride-2 upsample stages taking the bottleneck back up to
+  out_ch channels — mirrors ConvEncoderWithCNBlock. Receives mid1/mid2
+  directly from the encoder (via FeatureAutoencoder) so channel counts at
+  each resolution level match symmetrically.
+  """
   def __init__(
       self,
       out_ch         : int,
@@ -117,6 +155,13 @@ class ConvDecoderWithCNBlock(nn.Module):
 
 
 class FeatureAutoencoder(nn.Module):
+  """ประกอบ encoder + decoder เข้าด้วยกัน พร้อมเช็ค shape ให้แน่ใจว่า output
+  ตรงกับ input เป๊ะ (ไม่งั้น loss ที่คำนวณต่อ element จะผิด shape ทันที)
+
+  Wires the encoder + decoder together, with a shape check to guarantee
+  the output exactly matches the input (otherwise any per-element loss
+  would immediately break on a shape mismatch).
+  """
   def __init__(
       self,
       feat_ch        : int,
@@ -152,4 +197,11 @@ class FeatureAutoencoder(nn.Module):
     return recon
 
   def bottleneck(self, x: torch.Tensor) -> torch.Tensor:
+    """ผ่านแค่ encoder เท่านั้น (ไม่ decode) — ใช้ตอนอยากรู้แค่ spatial size
+    ของ bottleneck เช่นตอน train.py print ขนาดให้ดู ไม่ต้อง forward เต็ม
+
+    Runs only the encoder (no decoding) — used when only the bottleneck's
+    spatial size is needed, e.g. when train.py prints it, without a full
+    forward pass.
+    """
     return self.encoder(x)

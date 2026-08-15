@@ -6,27 +6,27 @@ from config.config import Config
 
 OVERRIDES = dict(
     # ── Data & paths ────────────────────────────────────────────────────
-    DATA_ROOT="/config/thesis/data/group1",
-    GOOD_DIRNAME="all_good",
-    DEFECT_DIRNAME="all_defect",
+    DATA_ROOT="folder dataset 1 type",
+    GOOD_DIRNAME="good",
+    DEFECT_DIRNAME="defect",
 
     SPLIT_RATIOS=(0.70, 0.15, 0.15),          # (train, val, test) ต้องรวมกัน = 1.0
     SPLIT_CACHE_PATH="splits/split_assignment.csv",
     GROUP_ID_REGEX=None,                      # regex 1 capture group กัน sample เดียวกันหลุดคนละ split
-    SAVE_PATH="/config/thesis/result/PH-0/save",
-    OUTPUT_PATH="/config/thesis/result/PH-0/output",
+    SAVE_PATH="save or log",
+    OUTPUT_PATH="output or table",
     VALID_EXT=('.jpg', '.jpeg', '.png', '.bmp'),
 
     # ── Reproducibility ─────────────────────────────────────────────────
     SEED=42,
     DEVICE=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-    EXPERIMENT='PH-0',  # ชื่อ experiment ที่จะถูกเก็บใน final_results.json
+    EXPERIMENT='EXPERIMENT --  --',  # ชื่อ experiment ที่จะถูกเก็บใน final_results.json
 
     # ── Loss & optimizer ─────────────────────────────────────────────────
-    LOSS='MSE',                                   # MSE | MAE/L1 | HUBER/SMOOTH_L1 | SSIM | SSIM_MSE
-    SSIM_WEIGHT=0.5,                            # ใช้เมื่อ LOSS='SSIM_MSE'
-    MSE_WEIGHT=0.5,                              # ใช้เมื่อ LOSS='SSIM_MSE'
+    LOSS='MSE',                                   # MSE | MAE/L1 | HUBER/SMOOTH_L1 | COS | COS_MSE
     HUBER_DELTA=1.0,                            # ใช้เมื่อ LOSS='HUBER'/'SMOOTH_L1'
+    COS_LAM=0.5,                                 # ใช้เมื่อ LOSS='COS_MSE' (weight ของ cosine term, 1-COS_LAM = weight ของ MSE term)
+    COS_EPS=1e-8,                                # ใช้เมื่อ LOSS='COS'/'COS_MSE' (stability epsilon ปกติไม่ต้องปรับ)
     OPTIM='Adam',                               # Adam | AdamW | SGD | RMSprop
     AE_MOMENTUM=0.9,                            # ใช้เมื่อ OPTIM='SGD'/'RMSprop'
     AE_SGD_NESTEROV=True,                       # ใช้เมื่อ OPTIM='SGD'
@@ -87,10 +87,10 @@ Config.__init__ = _patched_init
 
 if __name__ == "__main__":
 
-    print("\n--- [1/3] เริ่มทำงาน Train ---")
+    print("\n--- [1/2] เริ่มทำงาน Train ---")
     train.main()
 
-    print("\n--- [2/3] เริ่มทำงาน Visualize ---")
+    print("\n--- [2/2] เริ่มทำงาน Visualize ---")
     visualize.main()
 
     print("\n✅ เสร็จสิ้นกระบวนการทั้งหมดเรียบร้อย!")
