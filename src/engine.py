@@ -441,15 +441,54 @@ def compute_phi(raw_map: np.ndarray, topk_ratio: float) -> np.ndarray:
   defects with no single sharp peak, show up in σ_S/TV even when the
   map's raw maximum isn't unusually high.
   """
+  # แปลงเป็น 1 มิติก่อน เพื่อคำนวณสถิติของทั้ง map รวมกัน (ไม่แยก
+  # spatial structure ในสองบรรทัดแรกนี้ — TV ด้านล่างต่างหากที่ใช้ shape 2D)
+  # Flatten to 1D first, to compute statistics over the whole map (the
+  # first two lines below don't care about spatial structure — TV below
+  # is the only part that uses the 2D shape).
   flat = raw_map.reshape(-1)
+
+  # องค์ประกอบที่ 1: σ_S — ส่วนเบี่ยงเบนมาตรฐานของทั้ง map (การกระจายตัวโดยรวม)
+  # Component 1: σ_S — standard deviation of the whole map (overall dispersion)
   sigma_s = float(flat.std())
+
+  # องค์ประกอบที่ 2: topk_mean_r — เฉลี่ยของ pixel ที่ค่าสูงสุด top-topk_ratio
+  # (เช่น topk_ratio=0.01 คือ top 1% ของพิกเซลทั้งหมด)
+  # k คือจำนวนพิกเซลจริง ปัดขึ้นอย่างน้อย 1 พิกเซลเสมอ กัน map เล็กมากจน k=0
+  #
+  # Component 2: topk_mean_r — mean of the top-topk_ratio highest-value
+  # pixels (e.g. topk_ratio=0.01 = top 1% of all pixels).
+  # k is the actual pixel count, floored at 1 so a very small map never
+  # yields k=0.
   k = max(1, int(round(flat.size * topk_ratio)))
-  topk_vals = np.partition(flat, -k)[-k:]
+  topk_vals = np.partition(flat, -k)[-k:]   # k ค่าที่สูงที่สุด (ไม่เรียงลำดับ) / the k highest values (unordered)
   topk_mean = float(topk_vals.mean())
+
+  # องค์ประกอบที่ 3: TV(S) — total variation คือผลรวมค่าสัมบูรณ์ของผลต่าง
+  # ระหว่างพิกเซลข้างเคียงตามแนวแกน 0 (แถว) และแกน 1 (คอลัมน์) หารด้วย
+  # จำนวนพิกเซลทั้งหมด (H*W) — วัดความ "ขรุขระ" เชิงพื้นที่ของ map: map
+  # ที่ error กระจายเป็นหย่อมๆ ไม่เรียบจะมี TV สูงกว่า map ที่ error
+  # เปลี่ยนแปลงราบเรียบ แม้ max/mean จะเท่ากันก็ตาม
+  #
+  # Component 3: TV(S) — total variation: sum of absolute differences
+  # between neighboring pixels along axis 0 (rows) and axis 1 (columns),
+  # divided by the total pixel count (H*W) — measures the map's spatial
+  # "roughness": a map where error is scattered in uneven patches has
+  # higher TV than one where error changes smoothly, even if their
+  # max/mean are identical.
   tv = float(
-      np.abs(np.diff(raw_map, axis=0)).sum() +
-      np.abs(np.diff(raw_map, axis=1)).sum()
+      np.abs(np.diff(raw_map, axis=0)).sum() +   # |S[i+1,j] - S[i,j]| รวมทุกคู่ / summed over every row-pair
+      np.abs(np.diff(raw_map, axis=1)).sum()     # |S[i,j+1] - S[i,j]| รวมทุกคู่ / summed over every column-pair
   ) / raw_map.size
+
+  # รวม 3 องค์ประกอบเป็น φ(S) ตามลำดับที่ paper กำหนด (สำคัญ: ลำดับนี้
+  # ต้องตรงกับลำดับที่ fit_structcore_stats() ใช้ fit mu/sigma ด้วย ไม่งั้น
+  # D_struct ใน aggregate_score() จะคำนวณผิดมิติ)
+  #
+  # Combine the 3 components into φ(S) in the order the paper defines
+  # (important: this order must match the order fit_structcore_stats()
+  # fits mu/sigma in, or D_struct in aggregate_score() would compute
+  # against mismatched dimensions).
   return np.array([sigma_s, topk_mean, tv], dtype=np.float64)
 
 
@@ -486,31 +525,82 @@ def fit_structcore_stats(normal_loader, extractor, ae, criterion, cfg) -> dict:
   (max pooling) = std(S_base on train) / (std(D_struct on train) + eps)
   — avoids manually tuning λ (as recommended by the paper).
   """
+  # ต้องเป็น eval mode ทั้งคู่ — นี่คือ inference pass ล้วนๆ ไม่มีการเทรน
+  # ต่อ (ไม่ต้องมี dropout/batchnorm แบบ train mode)
+  # Both must be in eval mode — this is a pure inference pass, no further
+  # training (no dropout/batchnorm train-mode behavior needed).
   extractor.eval()
   ae.eval()
-  phis, base_scores = [], []
+
+  phis, base_scores = [], []   # เก็บ φ(S) และ max-pooling score ของทุกภาพใน training set / collect φ(S) and the max-pooling score for every training image
   with torch.no_grad():
-    for norm_t, _, _, _, _, _ in normal_loader:
+    for norm_t, _, _, _, _, _ in normal_loader:   # label (ตัวที่ 5) ถูกทิ้งตรงๆ — ไม่จำเป็นเพราะ normal_loader มีแต่ normal อยู่แล้ว / label (5th item) is discarded outright — unneeded since normal_loader is already normal-only
       norm_t = norm_t.to(cfg.DEVICE)
       feats = extractor(norm_t)
       feats = extractor.normalize(feats)
       recon = ae(feats)
+      # error map ดิบต่อภาพ ด้วย criterion เดียวกับที่ AE ถูกเทรนจริง
+      # (LOSS ที่ตั้งใน cfg) — สอดคล้องกับ error map ที่ AE "เห็น" ตอนเทรน
+      # Raw per-image error map, using the same criterion the AE was
+      # actually trained on (the LOSS set in cfg) — consistent with the
+      # error map the AE "saw" during training.
       err_map_raw = elementwise_error_map(feats, recon, criterion)  # [B, H, W]
       err_map_raw_np = err_map_raw.detach().cpu().numpy()
       for i in range(err_map_raw_np.shape[0]):
+        # upsample + smooth ให้เหมือนกับ pipeline ตอน scoring จริงเป๊ะ
+        # (score_dataset_split -> process_single_heatmap) ไม่งั้น φ(S) ที่
+        # fit ไว้ตรงนี้จะไม่ตรงกับ φ(S) ที่คำนวณตอน inference จริง
+        #
+        # Upsample + smooth using the exact same pipeline as real scoring
+        # (score_dataset_split -> process_single_heatmap), or the φ(S)
+        # fit here wouldn't match the φ(S) computed at real inference time.
         smoothed = upsample_and_smooth(
             err_map_raw_np[i], sigma=cfg.HEATMAP_SIGMA, out_size=cfg.IMAGE_SIZE)
         phis.append(compute_phi(smoothed, cfg.STRUCTCORE_TOPK_RATIO))
-        base_scores.append(float(smoothed.max()))
+        base_scores.append(float(smoothed.max()))   # S_base ของภาพนี้ (max pooling ธรรมดา ตามที่ paper กำหนดให้เป็น base) / this image's S_base (plain max pooling, the paper's chosen base score)
 
-  phis = np.stack(phis)          # [N, 3]
+  phis = np.stack(phis)          # [N, 3] — N = จำนวนภาพทั้งหมดใน training set / N = total number of training images
   base_scores = np.array(base_scores)  # [N]
+
+  # μ, σ ต่อมิติของ φ(S) บน training set — นิยาม "ปกติ" ในเชิงสถิติของ
+  # structural descriptor (ทำหน้าที่คล้าย extractor.feat_mean/feat_std
+  # ใน backbone_baseline.py แต่ fit บน φ(S) แทน feature map ดิบ)
+  #
+  # Per-dimension μ, σ of φ(S) over the training set — the statistical
+  # definition of "normal" for the structural descriptor (plays a role
+  # similar to extractor.feat_mean/feat_std in backbone_baseline.py, but
+  # fit on φ(S) instead of the raw feature map).
   mu = phis.mean(axis=0)
   sigma = phis.std(axis=0)
+
+  # D_struct ของทุกภาพใน training set เอง (diagonal Mahalanobis distance
+  # ระหว่าง φ(S) ของแต่ละภาพกับ μ, σ ที่เพิ่ง fit ไป) — ใช้แค่เพื่อหา
+  # scale ตามธรรมชาติของ D_struct เทียบกับ S_base เท่านั้น ไม่ได้เก็บค่า
+  # นี้ไว้ใช้ที่อื่นต่อ
+  #
+  # D_struct for every training image itself (diagonal Mahalanobis
+  # distance between each image's φ(S) and the μ, σ just fit) — used only
+  # to discover D_struct's natural scale relative to S_base; this value
+  # isn't kept for anything else afterward.
   d_struct_train = np.linalg.norm((phis - mu) / (sigma + cfg.STRUCTCORE_EPS), axis=1)
+
+  # λ_auto จับคู่ scale ของ D_struct ให้ใกล้เคียงกับ scale ของ S_base
+  # โดยอัตโนมัติ (เทียบ std ของสองฝั่งบน training set) — ป้องกันไม่ให้
+  # เทอมใดเทอมหนึ่งใน S_hyb = S_base + λ*D_struct ครอบงำอีกเทอมเพราะหน่วย
+  # ไม่ตรงกัน โดยไม่ต้อง grid-search หา λ เอง
+  #
+  # λ_auto automatically matches D_struct's scale to S_base's (comparing
+  # their standard deviations over the training set) — prevents either
+  # term in S_hyb = S_base + λ*D_struct from dominating the other purely
+  # due to mismatched units, without having to grid-search for λ by hand.
   lambda_auto = float(
       base_scores.std() / (d_struct_train.std() + cfg.STRUCTCORE_EPS))
 
+  # เก็บเป็น list ธรรมดา (ไม่ใช่ np.array) เพื่อให้ serialize เป็น JSON
+  # ได้ตรงๆ ถ้าต้องการเซฟไว้ (io_utils.py pattern เดียวกับไฟล์อื่นในระบบนี้)
+  # Store as plain lists (not np.array) so this is directly JSON-
+  # serializable if saved to disk (same io_utils.py pattern used
+  # elsewhere in this codebase).
   return {'mu': mu.tolist(), 'sigma': sigma.tolist(), 'lambda_auto': lambda_auto}
 
 
@@ -545,12 +635,40 @@ def aggregate_score(raw_map: np.ndarray, cfg, structcore_stats: dict = None) -> 
           "fit_structcore_stats() once after training finishes, then pass "
           "its result through score_dataset_split()'s structcore_stats "
           "argument).")
+    # ดึง μ, σ, λ_auto ที่ fit ไว้แล้วจาก training set กลับมา (ผลลัพธ์จาก
+    # fit_structcore_stats() — ดึง . tolist() กลับเป็น np.array เพื่อคำนวณ)
+    # Retrieve the already-fit μ, σ, λ_auto from the training set (the
+    # output of fit_structcore_stats() — converted back from .tolist()
+    # into np.array for computation).
     mu = np.array(structcore_stats['mu'])
     sigma = np.array(structcore_stats['sigma'])
     lam = structcore_stats['lambda_auto']
+
+    # φ(S) ของภาพนี้ ด้วย topk_ratio เดียวกับตอน fit (ต้องตรงกันเป๊ะ ไม่งั้น
+    # เทียบกับ μ/σ ผิดสเกล)
+    # φ(S) for this image, using the same topk_ratio as at fit time (must
+    # match exactly, or comparing against μ/σ would be on the wrong scale).
     phi = compute_phi(raw_map, cfg.STRUCTCORE_TOPK_RATIO)
+
+    # D_struct = diagonal Mahalanobis distance ของ φ(S) ภาพนี้ เทียบกับ
+    # การกระจายตัวของ φ(S) บน training set — ยิ่งภาพนี้ "รูปร่าง" ของ error
+    # ต่างจาก training set ปกติมากเท่าไหร่ ค่านี้ยิ่งสูง
+    # D_struct = diagonal Mahalanobis distance between this image's φ(S)
+    # and the training set's φ(S) distribution — the more this image's
+    # error "shape" deviates from the normal training distribution, the
+    # higher this value.
     d_struct = float(np.linalg.norm((phi - mu) / (sigma + cfg.STRUCTCORE_EPS)))
+
+    # S_base = max pooling ธรรมดา (ตามที่ paper กำหนดเป็น base score)
+    # S_base = plain max pooling (the paper's chosen base score).
     s_base = float(raw_map.max())
+
+    # S_hyb = S_base + λ_auto * D_struct — รวม "ความรุนแรงที่จุดเดียว"
+    # (S_base) เข้ากับ "ความผิดปกติของรูปร่างทั้ง map" (D_struct) โดย
+    # λ_auto ปรับสเกลให้สองเทอมนี้มีน้ำหนักใกล้เคียงกันแล้ว (คำนวณไว้ตอน fit)
+    # S_hyb = S_base + λ_auto * D_struct — combines "single-point severity"
+    # (S_base) with "whole-map shape abnormality" (D_struct), with
+    # λ_auto already scale-matching the two terms (computed at fit time).
     return s_base + lam * d_struct
   else:
     raise ValueError(f'Unknown SCORE_METHOD: {cfg.SCORE_METHOD!r}')

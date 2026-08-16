@@ -40,7 +40,7 @@ class Config:
   # ── Reproducibility / ทำซ้ำผลได้ ─────────────────────────────────
   SEED       : int          = 42
   DEVICE     : torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-  EXPERIMENT : str          = 'EXPERIMENT ----'
+  EXPERIMENT : str          = 'EXPERIMENT'
   # ── Loss & optimizer ───────────────────────────────────────────
   LOSS         : str            = 'MSE'
   # Weight ของ cosine term ใน CosineMSELoss (LOSS='COS_MSE'):
