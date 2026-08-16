@@ -40,7 +40,7 @@ class Config:
   # ── Reproducibility / ทำซ้ำผลได้ ─────────────────────────────────
   SEED       : int          = 42
   DEVICE     : torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-  EXPERIMENT : str          = 'EXPERIMENT --  --'
+  EXPERIMENT : str          = 'EXPERIMENT ----'
   # ── Loss & optimizer ───────────────────────────────────────────
   LOSS         : str            = 'MSE'
   # Weight ของ cosine term ใน CosineMSELoss (LOSS='COS_MSE'):
@@ -115,7 +115,24 @@ class Config:
 
   SCORE_METHOD          : str   = 'topk'
   SCORE_TOPK_PERCENT    : float = 10.0
-  AE_MONITOR            : str   = 'val_loss'
+  # ค่า r (สัดส่วน top-k) ที่ใช้ในองค์ประกอบ topk_mean_r ของ φ(S) สำหรับ
+  # SCORE_METHOD='structcore' — คนละตัวกับ SCORE_TOPK_PERCENT (ซึ่งเป็นคนละ
+  # aggregation method) ค่า default 0.01 (top 1%) ตรงกับที่ StructCore paper
+  # ใช้ (Chae et al. 2026, arXiv:2602.17048)
+  #
+  # The r (top-k ratio) used by the topk_mean_r component of φ(S) for
+  # SCORE_METHOD='structcore' — a separate knob from SCORE_TOPK_PERCENT
+  # (a different aggregation method entirely). Default 0.01 (top 1%)
+  # matches the StructCore paper's default (Chae et al. 2026,
+  # arXiv:2602.17048).
+  STRUCTCORE_TOPK_RATIO : float = 0.01
+  # Stability epsilon ของ diagonal Mahalanobis distance และ λ_auto ใน
+  # SCORE_METHOD='structcore' (กันหารด้วยศูนย์)
+  #
+  # Stability epsilon for the diagonal Mahalanobis distance and λ_auto in
+  # SCORE_METHOD='structcore' (guards against division by zero).
+  STRUCTCORE_EPS        : float = 1e-8
+  AE_MONITOR            : str   = 'val_auroc'
   USE_AUGMENTATION      : bool  = False
   AUG_COLOR_JITTER      : float = 0.20
 
@@ -210,6 +227,16 @@ class Config:
   _VALID_LOSSES = ('MSE', 'MAE', 'L1', 'HUBER', 'SMOOTH_L1', 'SMOOTHL1',
                     'COS', 'COS_MSE', 'COS+MSE', 'COSMSE')
 
+  # ต้องตรงกับทุกค่าที่ src/engine.py:aggregate_score() รู้จักจริง เหตุผล
+  # เดียวกับ _VALID_LOSSES ด้านบน — 'structcore' ต้องการ field
+  # STRUCTCORE_TOPK_RATIO/STRUCTCORE_EPS ด้วย (มี default ให้แล้ว)
+  #
+  # Must match every value src/engine.py:aggregate_score() actually
+  # recognizes, same reasoning as _VALID_LOSSES above — 'structcore' also
+  # needs the STRUCTCORE_TOPK_RATIO/STRUCTCORE_EPS fields (already
+  # defaulted).
+  _VALID_SCORE_METHODS = ('MEAN', 'MAX', 'TOPK', 'STRUCTCORE')
+
   def __post_init__(self):
     for p in [self.SAVE_PATH, self.OUTPUT_PATH]:
       Path(p).mkdir(parents=True, exist_ok=True)
@@ -226,6 +253,14 @@ class Config:
           f"here (fail-fast, like Config.OPTIM) instead of letting a typo "
           f"propagate silently until src/losses.py:get_criterion() raises "
           f"mid-training in scripts/train.py.")
+
+    if self.SCORE_METHOD.strip().upper() not in self._VALID_SCORE_METHODS:
+      raise ValueError(
+          f"Config.SCORE_METHOD must be one of {self._VALID_SCORE_METHODS} "
+          f"(case-insensitive), got {self.SCORE_METHOD!r}. This is checked "
+          f"eagerly here (fail-fast, like Config.LOSS/Config.OPTIM) instead "
+          f"of letting a typo propagate silently until "
+          f"src/engine.py:aggregate_score() raises mid-training.")
 
     ratio_sum = sum(self.SPLIT_RATIOS)
     if not np.isclose(ratio_sum, 1.0, atol=1e-6):
