@@ -47,7 +47,8 @@ from config.config import Config, set_seed
 from src.data.dataset import build_datasets_and_loaders
 from src.model.backbone_baseline import ConvNeXtExtractor
 from src.model.autoencoder import FeatureAutoencoder
-from src.engine import train_autoencoder, score_dataset_split, get_best_epoch
+from src.engine import train_autoencoder, score_dataset_split, get_best_epoch, fit_structcore_stats
+from src.losses import get_criterion
 from src.evaluate import (compute_metrics, select_percentile_threshold,
                           oracle_threshold_diagnostic)
 from src import io_utils
@@ -219,13 +220,36 @@ def main(cfg: Config = None):
 
     # ── PHASE 5 — Anomaly scoring / คำนวณ anomaly score ─────────────────────────
     print('=== Scoring val/test splits ===')
+
+    # StructCore (SCORE_METHOD='structcore') ต้อง fit μ/σ/λ_auto จาก
+    # training set (normal เท่านั้น — label-free 100%) ผ่าน AE ที่เทรน
+    # เสร็จแล้วก่อน ถึงจะใช้ aggregate_score()/score_dataset_split() ได้
+    # ทำครั้งเดียวตรงนี้ (ไม่ใช่ทุก epoch — ดูเหตุผลเต็มใน
+    # src/engine.py:fit_structcore_stats() docstring) สำหรับ SCORE_METHOD
+    # อื่น structcore_stats จะเป็น None เสมอ (ไม่ถูกใช้)
+    #
+    # StructCore (SCORE_METHOD='structcore') must fit μ/σ/λ_auto from the
+    # training set (normal only — 100% label-free) through the
+    # already-trained AE before aggregate_score()/score_dataset_split()
+    # can use it. Done once here (not every epoch — see
+    # src/engine.py:fit_structcore_stats()'s docstring for why). For any
+    # other SCORE_METHOD, structcore_stats stays None (unused).
+    structcore_stats = None
+    if CFG.SCORE_METHOD == 'structcore':
+      print('Fitting StructCore calibration stats from training set (normal-only, label-free)...')
+      _criterion_for_fit = get_criterion(CFG)
+      structcore_stats = fit_structcore_stats(normal_loader, extractor, ae, _criterion_for_fit, CFG)
+      print(f'  mu={structcore_stats["mu"]}')
+      print(f'  sigma={structcore_stats["sigma"]}')
+      print(f'  lambda_auto={structcore_stats["lambda_auto"]:.6f}')
+
     (val_scores, val_y, val_paths, val_labels,
      val_hmaps,  val_imgs, val_preproc_imgs) = score_dataset_split(
-        val_loader, extractor, ae, CFG, desc='Score-Val  ')
+        val_loader, extractor, ae, CFG, desc='Score-Val  ', structcore_stats=structcore_stats)
 
     (test_scores, test_y, test_paths, test_labels,
      test_hmaps,  test_imgs, test_preproc_imgs) = score_dataset_split(
-        test_loader, extractor, ae, CFG, desc='Score-Test ')
+        test_loader, extractor, ae, CFG, desc='Score-Test ', structcore_stats=structcore_stats)
 
     threshold = select_percentile_threshold(val_scores, val_y, CFG)
     print(f'\nDeployment threshold ({CFG.THRESHOLD_PERCENTILE:.0f}th pct of val normal): {threshold:.6f}')

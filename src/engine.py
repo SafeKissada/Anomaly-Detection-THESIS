@@ -119,11 +119,12 @@ def aggregate_score_torch(error_map: torch.Tensor, cfg) -> torch.Tensor:
   """
   b = error_map.size(0)
   flat = error_map.reshape(b, -1)
-  if cfg.SCORE_METHOD == 'mean':
+  score_method = cfg.SCORE_METHOD.strip().lower()
+  if score_method == 'mean':
     return flat.mean(dim=1)
-  elif cfg.SCORE_METHOD == 'max':
+  elif score_method == 'max':
     return flat.max(dim=1).values
-  elif cfg.SCORE_METHOD == 'topk':
+  elif score_method == 'topk':
     k = max(1, int(flat.size(1) * cfg.SCORE_TOPK_PERCENT / 100.0))
     topk_vals, _ = flat.topk(k, dim=1)
     return topk_vals.mean(dim=1)
@@ -226,6 +227,31 @@ def train_autoencoder(
           # raw, native-resolution map. This is done on CPU (cv2/scipy have no
           # GPU batched equivalent) which is slightly slower per epoch, but
           # only affects the validation pass, not the training forward/backward.
+          #
+          # กรณี SCORE_METHOD='structcore' เป็นข้อยกเว้น: StructCore ต้อง fit
+          # μ/σ/λ_auto จาก training set ทั้งชุดผ่าน AE ตัวปัจจุบันก่อนใช้งาน
+          # ได้ (ดู fit_structcore_stats()) แต่ AE เปลี่ยน weight ทุก epoch
+          # ระหว่างเทรน การ fit ใหม่ทุก epoch จะช้าเกินไปเพราะต้อง pass เต็ม
+          # ผ่าน normal_loader ทั้งชุดในทุก epoch จึงใช้ max pooling ธรรมดา
+          # เป็น proxy สำหรับ val_auroc ระหว่างเทรนแทน (เร็ว ไม่ต้อง fit)
+          # ส่วนตัวเลขที่รายงานจริงตอนจบ (score_dataset_split) จะ fit และ
+          # ใช้ StructCore เต็มรูปแบบ — เป็นข้อจำกัดทางสถาปัตยกรรมที่หลีก
+          # เลี่ยงไม่ได้ ไม่ใช่บั๊ก ต้องระบุไว้ใน thesis ถ้าใช้ SCORE_METHOD
+          # นี้ว่า metric ที่ใช้เลือก checkpoint กับที่รายงานผลไม่ใช่ตัว
+          # เดียวกันเป๊ะในกรณีนี้เท่านั้น
+          #
+          # SCORE_METHOD='structcore' is an exception: StructCore must fit
+          # μ/σ/λ_auto from the entire training set through the current AE
+          # before it can be used (see fit_structcore_stats()), but the AE's
+          # weights change every epoch during training. Refitting every
+          # epoch would be too slow (a full pass over normal_loader every
+          # epoch), so plain max pooling is used as a proxy for val_auroc
+          # during training instead (fast, no fitting needed). The final
+          # reported numbers (score_dataset_split) fit and use full
+          # StructCore. This is an unavoidable architectural limitation, not
+          # a bug — if this SCORE_METHOD is used, note in the thesis that
+          # the checkpoint-selection metric and the reported metric are not
+          # exactly the same in this one case.
           error_map_raw_np = error_map_raw.detach().cpu().numpy()
           batch_scores = np.empty(error_map_raw_np.shape[0], dtype=np.float32)
           for i in range(error_map_raw_np.shape[0]):
@@ -233,7 +259,9 @@ def train_autoencoder(
                 error_map_raw_np[i],
                 sigma=cfg.HEATMAP_SIGMA,
                 out_size=cfg.IMAGE_SIZE)
-            batch_scores[i] = aggregate_score(smoothed_map, cfg)
+            batch_scores[i] = (
+                float(smoothed_map.max()) if cfg.SCORE_METHOD.strip().lower() == 'structcore'
+                else aggregate_score(smoothed_map, cfg))
 
           batch_y = np.array([1 if l == 'anomaly' else 0 for l in batch_labels])
           normal_mask = (batch_y == 0)
@@ -384,22 +412,146 @@ def process_single_heatmap(
     return raw_map, normalized_map
 
 
-def aggregate_score(raw_map: np.ndarray, cfg) -> float:
+def compute_phi(raw_map: np.ndarray, topk_ratio: float) -> np.ndarray:
+  """คำนวณ structural descriptor φ(S) = [σ_S, topk_mean_r, TV(S)] ตาม
+  StructCore (Chae et al. 2026, arXiv:2602.17048) — สรุป error map เป็น
+  vector 3 มิติที่จับ 3 คุณสมบัติเสริมกัน: (1) การกระจายตัวโดยรวม
+  (σ_S = ส่วนเบี่ยงเบนมาตรฐานของทั้ง map), (2) ความเข้มข้นของ tail
+  (topk_mean_r = ค่าเฉลี่ยของ pixel ที่ค่าสูงสุด top-`topk_ratio`),
+  (3) ความขรุขระเชิงพื้นที่ (TV = total variation — ผลรวมค่าสัมบูรณ์ของ
+  ผลต่างระหว่างพิกเซลข้างเคียง หารด้วยจำนวนพิกเซลทั้งหมด)
+
+  ต่างจาก max pooling เดี่ยวๆ (ที่ดูแค่ pixel เดียว) φ(S) จับ "รูปร่าง"
+  ของความผิดปกติทั้ง map ไว้ด้วย — defect ที่กระจายเป็นหย่อมเล็กๆ
+  หลายจุด หรือ defect ที่ diffuse (ไม่มี peak เดียวที่ชัดเจน) จะสะท้อน
+  ออกมาใน σ_S/TV แม้ max ของ map จะไม่ได้สูงผิดปกติมากก็ตาม
+
+  Compute the structural descriptor φ(S) = [σ_S, topk_mean_r, TV(S)]
+  per StructCore (Chae et al. 2026, arXiv:2602.17048) — summarizes the
+  error map into a 3D vector capturing three complementary properties:
+  (1) overall dispersion (σ_S = standard deviation of the whole map),
+  (2) tail concentration (topk_mean_r = mean of the top-`topk_ratio`
+  highest-value pixels), (3) spatial roughness (TV = total variation —
+  sum of absolute differences between neighboring pixels, divided by
+  the total pixel count).
+
+  Unlike max pooling alone (which only looks at a single pixel), φ(S)
+  also captures the "shape" of the anomaly across the whole map —
+  defects that are spread across several small patches, or diffuse
+  defects with no single sharp peak, show up in σ_S/TV even when the
+  map's raw maximum isn't unusually high.
+  """
+  flat = raw_map.reshape(-1)
+  sigma_s = float(flat.std())
+  k = max(1, int(round(flat.size * topk_ratio)))
+  topk_vals = np.partition(flat, -k)[-k:]
+  topk_mean = float(topk_vals.mean())
+  tv = float(
+      np.abs(np.diff(raw_map, axis=0)).sum() +
+      np.abs(np.diff(raw_map, axis=1)).sum()
+  ) / raw_map.size
+  return np.array([sigma_s, topk_mean, tv], dtype=np.float64)
+
+
+def fit_structcore_stats(normal_loader, extractor, ae, criterion, cfg) -> dict:
+  """Fit สถิติ StructCore (μ, σ ของ φ(S), และ λ_auto) จาก **training set
+  (normal เท่านั้น)** — เรียกครั้งเดียวหลังเทรนเสร็จ ก่อนเริ่ม scoring
+  val/test จริง (ไม่ใช่ระหว่างเทรน เพราะ AE เปลี่ยน weight ทุก epoch การ
+  fit ใหม่ทุก epoch จะช้าเกินไป — ดูรายละเอียดที่ elif
+  cfg.SCORE_METHOD=='structcore' ใน train_autoencoder() ด้านล่างที่ใช้
+  'max' pooling เป็น proxy ระหว่างเทรนแทน)
+
+  Fit ด้วย train-good เท่านั้น หมายความว่าขั้นตอนนี้**ไม่ใช้ anomaly
+  label เลย** (label-free 100%) ต่างจาก percentile threshold ที่ต้องรู้
+  label 'normal' ของ validation set
+
+  μ, σ: ค่าเฉลี่ย/ส่วนเบี่ยงเบนมาตรฐานต่อมิติของ φ(S) บน training set
+  λ_auto: น้ำหนักที่ปรับสเกลของ D_struct ให้ใกล้เคียงกับสเกลของ S_base
+  (max pooling) โดยอัตโนมัติ = std(S_base บน train) / (std(D_struct บน
+  train) + eps) — เพื่อไม่ต้อง tune λ เอง (ตามที่ paper แนะนำ)
+
+  Fit StructCore statistics (φ(S)'s μ, σ, and λ_auto) from the
+  **training set (normal only)** — called once after training finishes,
+  before scoring val/test (not during training, since the AE's weights
+  change every epoch and refitting every epoch would be too slow — see
+  the cfg.SCORE_METHOD=='structcore' branch inside train_autoencoder()
+  below, which uses 'max' pooling as a proxy during training instead).
+
+  Fitting on train-good only means this step uses NO anomaly labels at
+  all (100% label-free), unlike the percentile threshold which needs to
+  know the validation set's 'normal' labels.
+
+  μ, σ: per-dimension mean/std of φ(S) over the training set.
+  λ_auto: automatic scale-matching weight between D_struct and S_base
+  (max pooling) = std(S_base on train) / (std(D_struct on train) + eps)
+  — avoids manually tuning λ (as recommended by the paper).
+  """
+  extractor.eval()
+  ae.eval()
+  phis, base_scores = [], []
+  with torch.no_grad():
+    for norm_t, _, _, _, _, _ in normal_loader:
+      norm_t = norm_t.to(cfg.DEVICE)
+      feats = extractor(norm_t)
+      feats = extractor.normalize(feats)
+      recon = ae(feats)
+      err_map_raw = elementwise_error_map(feats, recon, criterion)  # [B, H, W]
+      err_map_raw_np = err_map_raw.detach().cpu().numpy()
+      for i in range(err_map_raw_np.shape[0]):
+        smoothed = upsample_and_smooth(
+            err_map_raw_np[i], sigma=cfg.HEATMAP_SIGMA, out_size=cfg.IMAGE_SIZE)
+        phis.append(compute_phi(smoothed, cfg.STRUCTCORE_TOPK_RATIO))
+        base_scores.append(float(smoothed.max()))
+
+  phis = np.stack(phis)          # [N, 3]
+  base_scores = np.array(base_scores)  # [N]
+  mu = phis.mean(axis=0)
+  sigma = phis.std(axis=0)
+  d_struct_train = np.linalg.norm((phis - mu) / (sigma + cfg.STRUCTCORE_EPS), axis=1)
+  lambda_auto = float(
+      base_scores.std() / (d_struct_train.std() + cfg.STRUCTCORE_EPS))
+
+  return {'mu': mu.tolist(), 'sigma': sigma.tolist(), 'lambda_auto': lambda_auto}
+
+
+def aggregate_score(raw_map: np.ndarray, cfg, structcore_stats: dict = None) -> float:
   """รวม heatmap ของภาพเดียว (numpy array) เป็น anomaly score เดียว
-  ตาม cfg.SCORE_METHOD ('mean' | 'max' | 'topk')
+  ตาม cfg.SCORE_METHOD ('mean' | 'max' | 'topk' | 'structcore')
 
   Aggregate a single image's heatmap (numpy array) into one anomaly
-  score, according to cfg.SCORE_METHOD ('mean' | 'max' | 'topk').
+  score, according to cfg.SCORE_METHOD ('mean' | 'max' | 'topk' |
+  'structcore').
+
+  `structcore_stats`: ต้องส่งมาเมื่อ SCORE_METHOD='structcore' เท่านั้น
+  (ผลลัพธ์จาก fit_structcore_stats() — เรียก error ถ้าไม่ส่งมา แทนที่จะ
+  fallback ไปทำอะไรแบบเงียบๆ). `structcore_stats` must be supplied only
+  when SCORE_METHOD='structcore' (the output of fit_structcore_stats())
+  — raises instead of silently falling back to something else if missing.
   """
-  if cfg.SCORE_METHOD == 'mean':
+  score_method = cfg.SCORE_METHOD.strip().lower()
+  if score_method == 'mean':
     return float(raw_map.mean())
-  elif cfg.SCORE_METHOD == 'max':
+  elif score_method == 'max':
     return float(raw_map.max())
-  elif cfg.SCORE_METHOD == 'topk':
+  elif score_method == 'topk':
     flat = raw_map.reshape(-1)
     k = max(1, int(flat.size * cfg.SCORE_TOPK_PERCENT / 100.0))
     topk_vals = np.partition(flat, -k)[-k:]
     return float(topk_vals.mean())
+  elif score_method == 'structcore':
+    if structcore_stats is None:
+      raise ValueError(
+          "SCORE_METHOD='structcore' requires structcore_stats (call "
+          "fit_structcore_stats() once after training finishes, then pass "
+          "its result through score_dataset_split()'s structcore_stats "
+          "argument).")
+    mu = np.array(structcore_stats['mu'])
+    sigma = np.array(structcore_stats['sigma'])
+    lam = structcore_stats['lambda_auto']
+    phi = compute_phi(raw_map, cfg.STRUCTCORE_TOPK_RATIO)
+    d_struct = float(np.linalg.norm((phi - mu) / (sigma + cfg.STRUCTCORE_EPS)))
+    s_base = float(raw_map.max())
+    return s_base + lam * d_struct
   else:
     raise ValueError(f'Unknown SCORE_METHOD: {cfg.SCORE_METHOD!r}')
 
@@ -409,15 +561,24 @@ def score_dataset_split(
     extractor  : nn.Module,
     ae         : nn.Module,
     cfg,
-    desc       : str = 'Scoring'
+    desc       : str = 'Scoring',
+    structcore_stats: dict = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
   """รัน inference บนทั้ง split (val/test) แล้วคืน score, label, heatmap,
   และภาพต้นฉบับของทุกภาพในนั้น — นี่คือฟังก์ชันที่ผลิตตัวเลข AUROC/F1/ฯลฯ
   ที่รายงานเป็นผลสุดท้าย
 
+  `structcore_stats`: ต้องส่งมาถ้า cfg.SCORE_METHOD='structcore' (ผลลัพธ์
+  จาก fit_structcore_stats() ที่ fit ครั้งเดียวหลังเทรนเสร็จ) ไม่ใช้กับ
+  SCORE_METHOD อื่น
+
   Run inference over an entire split (val/test) and return the score,
   label, heatmap, and original image for every image in it — this is the
   function that produces the final reported AUROC/F1/etc.
+
+  `structcore_stats`: required only if cfg.SCORE_METHOD='structcore' (the
+  output of fit_structcore_stats(), fit once after training finishes);
+  unused for any other SCORE_METHOD.
   """
   extractor.eval()
   ae.eval()
@@ -444,7 +605,7 @@ def score_dataset_split(
             criterion = criterion
         )
 
-        img_score.append(aggregate_score(raw_map, cfg))
+        img_score.append(aggregate_score(raw_map, cfg, structcore_stats=structcore_stats))
         y_true.append(1 if batch_labels[i] == 'anomaly' else 0)
         paths.append(batch_paths[i])
         labels.append(batch_labels[i])
