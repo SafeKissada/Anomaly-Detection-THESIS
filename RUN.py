@@ -12,21 +12,21 @@ from config.config import Config
 
 OVERRIDES = dict(
     # ── Data & paths / ข้อมูลและ path ──────────────────────────────────────
-    DATA_ROOT="folder dataset 1 type",
+    DATA_ROOT="ataset root path (contains good/ and defect/ subfolders)",
     GOOD_DIRNAME="good",
     DEFECT_DIRNAME="defect",
 
     SPLIT_RATIOS=(0.70, 0.15, 0.15),          # (train, val, test) ต้องรวมกัน = 1.0 / must sum to 1.0
     SPLIT_CACHE_PATH="splits/split_assignment.csv",
     GROUP_ID_REGEX=None,                      # regex 1 capture group กัน sample เดียวกันหลุดคนละ split / keeps same-group samples out of different splits
-    SAVE_PATH="log",
-    OUTPUT_PATH="table",
+    SAVE_PATH="save log",
+    OUTPUT_PATH="save image/table",
     VALID_EXT=('.jpg', '.jpeg', '.png', '.bmp'),
 
     # ── Reproducibility / ทำซ้ำผลได้ ────────────────────────────────────────
     SEED=42,
     DEVICE=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-    EXPERIMENT='EXPERIMENT ----',  # ชื่อ experiment ที่จะถูกเก็บใน final_results.json / experiment name saved into final_results.json
+    EXPERIMENT='EXPERIMENT',  # ชื่อ experiment ที่จะถูกเก็บใน final_results.json / experiment name saved into final_results.json
 
     # ── Loss & optimizer / ฟังก์ชัน loss และ optimizer ──────────────────────
     LOSS='MSE',                                   # MSE | MAE/L1 | HUBER/SMOOTH_L1 | COS | COS_MSE
