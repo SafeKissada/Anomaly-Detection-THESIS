@@ -33,9 +33,9 @@
 - **Semi-supervised AD (one-class)** — training set มีแต่ normal เท่านั้น (รู้แน่ชัดว่าสะอาด) — **นี่คือสิ่งที่ระบบนี้ทำ**: `scan_and_split()` การันตีว่า `train` split มีแต่แถว `label == 'normal'` เท่านั้น พร้อม `_assert_no_defect_in_train()` เป็นตาข่ายนิรภัยตรวจซ้ำ
 - **Supervised AD** — เทรนด้วยทั้ง normal และ anomaly ที่มี label ครบ เป็น binary classification ตรงๆ (ระบบนี้**ไม่ใช่**แบบนี้)
 
-**จุดที่ต้อง honest ตอนเขียนวิทยานิพนธ์**: อย่า claim ว่าทั้ง pipeline เป็น "unsupervised 100%" แม้จะตั้ง `AE_MONITOR='val_loss'` (ค่า default ของ `RUN.py`) ให้การเลือก checkpoint ระหว่างเทรนเป็น label-free แล้วก็ตาม เพราะยังมีอีก 2 จุดที่ใช้ label เสมอไม่ว่า `AE_MONITOR` จะตั้งเป็นอะไร: (1) `scan_and_split()` ต้องรู้ label good/defect ตอนคัด train/val/test ตั้งแต่ต้น และ (2) `select_percentile_threshold()`/`compute_metrics()` ต้องใช้ label ของ validation/test set เพื่อตั้ง threshold และรายงานผล AUROC/F1 — ระบบนี้จึงยังคงเป็น **semi-supervised (one-class)** เสมอ ไม่ว่าจะตั้ง `AE_MONITOR` เป็นอะไร ส่วน `oracle_threshold_diagnostic()` (max-F1) ใช้ label ของ anomaly ใน validation ตรงๆ ด้วย — แต่เป็น **diagnostic เท่านั้น ไม่ได้ใช้เป็นผลจริง** เพราะจะทำให้ deployment ไม่ realistic
+**จุดที่ต้อง honest**: ไม่ claim ว่าทั้ง pipeline เป็น "unsupervised 100%" แม้จะตั้ง `AE_MONITOR='val_loss'` (ค่า default ของ `RUN.py`) ให้การเลือก checkpoint ระหว่างเทรนเป็น label-free แล้วก็ตาม เพราะยังมีอีก 2 จุดที่ใช้ label เสมอไม่ว่า `AE_MONITOR` จะตั้งเป็นอะไร: (1) `scan_and_split()` ต้องรู้ label good/defect ตอนคัด train/val/test ตั้งแต่ต้น และ (2) `select_percentile_threshold()`/`compute_metrics()` ต้องใช้ label ของ validation/test set เพื่อตั้ง threshold และรายงานผล AUROC/F1 — ระบบนี้จึงยังคงเป็น **semi-supervised (one-class)** เสมอ ไม่ว่าจะตั้ง `AE_MONITOR` เป็นอะไร ส่วน `oracle_threshold_diagnostic()` (max-F1) ใช้ label ของ anomaly ใน validation ตรงๆ ด้วย — แต่เป็น **diagnostic เท่านั้น ไม่ได้ใช้เป็นผลจริง** เพราะจะทำให้ deployment ไม่ realistic
 
-สรุปสั้นๆ ที่ใช้ในวิทยานิพนธ์ได้: *"ระบบนี้ใช้แนวทาง semi-supervised (one-class) anomaly detection — autoencoder ถูกเทรนด้วยภาพปกติ (normal) เท่านั้น โดยไม่เคยเห็นภาพที่มีตำหนิ (anomaly) ระหว่างการเทรนเลย ด้วยการตั้ง `AE_MONITOR='val_loss'` การเลือก checkpoint ระหว่างเทรนก็เป็น label-free เช่นกัน label ของภาพ anomaly ถูกใช้เฉพาะขั้นตอนตั้ง deployment threshold และวัดผลบน validation/test set เท่านั้น ไม่ได้ถูกใช้ในการคำนวณ loss function หรือปรับ parameter ของโมเดลแต่อย่างใด"*
+สรุป: *"ระบบนี้ใช้แนวทาง semi-supervised (one-class) anomaly detection — autoencoder ถูกเทรนด้วยภาพปกติ (normal) เท่านั้น โดยไม่เคยเห็นภาพที่มีตำหนิ (anomaly) ระหว่างการเทรนเลย ด้วยการตั้ง `AE_MONITOR='val_loss'` การเลือก checkpoint ระหว่างเทรนก็เป็น label-free เช่นกัน label ของภาพ anomaly ถูกใช้เฉพาะขั้นตอนตั้ง deployment threshold และวัดผลบน validation/test set เท่านั้น ไม่ได้ถูกใช้ในการคำนวณ loss function หรือปรับ parameter ของโมเดลแต่อย่างใด"*
 
 ### โครงสร้างโปรเจกต์
 
@@ -120,7 +120,7 @@ python scripts/visualize.py
 | `BACKBONE` | `tiny` \| `small` \| `base` \| `large` (ConvNeXt variant) |
 | `LOSS` | `MSE` \| `MAE`/`L1` \| `HUBER`/`SMOOTH_L1` \| `COS` \| `COS_MSE` |
 | `OPTIM` | `Adam` \| `AdamW` \| `SGD` \| `RMSprop` |
-| `SCORE_METHOD` | `mean` \| `max` \| `topk` (วิธีรวม score ระดับภาพ) |
+| `SCORE_METHOD` | `mean` \| `max` \| `topk` |`structure` (วิธีรวม score ระดับภาพ) |
 | โหมดสี | `RGB` (default) \| `GRAYSCALE` \| `GRAYSCALE_EQUALIZATION` \| `GRAYSCALE_CLAHE` \| `GRAYSCALE_EQUALIZATION_CLAHE` — ควบคุมผ่าน `USE_GRAYSCALE`, `USE_GRAYSCALE_EQUALIZATION`, `USE_CLAHE` |
 
 #### Loss functions
