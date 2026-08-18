@@ -12,7 +12,7 @@ from config.config import Config
 
 OVERRIDES = dict(
     # ── Data & paths / ข้อมูลและ path ──────────────────────────────────────
-    DATA_ROOT="ataset root path (contains good/ and defect/ subfolders)",
+    DATA_ROOT="dataset root path (contains good/ and defect/ subfolders)",
     GOOD_DIRNAME="good",
     DEFECT_DIRNAME="defect",
 
@@ -45,8 +45,8 @@ OVERRIDES = dict(
 
     # ── DataLoader ──────────────────────────────────────────────────────
     BATCH_SIZE=32,
-    NUM_WORKERS=0,
-    PIN_MEMORY=False,
+    NUM_WORKERS=2,
+    PIN_MEMORY=True,
 
     # ── Autoencoder training / เทรน autoencoder ─────────────────────────────
     AE_EPOCHS=100,
@@ -64,7 +64,7 @@ OVERRIDES = dict(
     SCORE_TOPK_PERCENT=10.0,                    # ใช้เมื่อ SCORE_METHOD='topk' / used when SCORE_METHOD='topk'
     STRUCTCORE_TOPK_RATIO=0.01,                 # ใช้เมื่อ SCORE_METHOD='structcore' (r ใน φ(S), ค่า default ตาม paper) / used when SCORE_METHOD='structcore' (r in φ(S), paper default)
     STRUCTCORE_EPS=1e-8,                        # ใช้เมื่อ SCORE_METHOD='structcore' (stability epsilon ปกติไม่ต้องปรับ) / used when SCORE_METHOD='structcore' (stability epsilon, rarely needs tuning)
-    AE_MONITOR='val_auroc',                     # val_auroc | val_loss_normal | val_loss
+    AE_MONITOR='val_loss',                     # val_auroc | val_loss_normal | val_loss 
     USE_AUGMENTATION=True,
     AUG_COLOR_JITTER=0.20,
 
