@@ -10,24 +10,52 @@ from sklearn.metrics import (roc_curve, roc_auc_score, average_precision_score,
                              confusion_matrix, precision_recall_curve)
 
 
-def compute_metrics(scores: np.ndarray, y_true: np.ndarray, threshold: float) -> Dict:
-    """คำนวณ metric ครบชุดจาก score/label/threshold ที่ให้มา — คืน dict เดียว
-    รวมทั้ง classification metrics มาตรฐาน (AUC, AP, accuracy, precision,
-    recall, F1) และ metric เชิงปฏิบัติงานจริง (auto-clear rate, escape
-    rate, residual false-clear rate) ที่สื่อความหมายกับผู้ใช้งานจริงมากกว่า
-    (เช่น ใน context QC/inspection line)
+def compute_metrics_from_predictions(gt: np.ndarray, pred: np.ndarray,
+                                      scores: np.ndarray = None) -> Dict:
+    """เวอร์ชัน core ของ compute_metrics(): รับ prediction (0/1) ตรงๆ
+    ไม่ผ่าน threshold logic เลย — แยกออกมาจาก compute_metrics() เพื่อให้
+    naive baseline (always_normal / always_anomaly / random_prior) เรียก
+    ใช้ได้ตรงๆ โดยไม่ต้อง "หลอก" ฟังก์ชันเดิมด้วย score/threshold ปลอม
+    (เช่น score=0, threshold=0.5) ซึ่งเสี่ยงเกิดบั๊กแบบ two-code-path-
+    out-of-sync เหมือนที่เคยเจอใน engine.py (silent MSE fallback)
 
-    Compute the full metric set from the given scores/labels/threshold —
-    returns a single dict with both standard classification metrics (AUC,
-    AP, accuracy, precision, recall, F1) and operationally meaningful
-    metrics (auto-clear rate, escape rate, residual false-clear rate) that
-    are easier to reason about in a real QC/inspection-line context.
+    ถ้า scores=None (ไม่มี ranking-based score ที่มีความหมาย ผูกกับ pred
+    แบบต่อเนื่อง เช่น naive baseline ที่ pred เป็นค่าคงที่หรือสุ่มแบบไม่มี
+    score รองรับ) ฟังก์ชันจะคืน auc=ap=NaN และ fpr=tpr=array ว่าง ตามหลัก
+    ที่ว่า ranking-based metric ไม่มีความหมายกับ fixed/random decision
+    rule (AUC/AP วัดคุณภาพการจัดอันดับของ score ต่อเนื่อง ไม่ใช่คุณภาพของ
+    prediction 0/1 เดี่ยวๆ)
+
+    Core version of compute_metrics(): takes predictions (0/1) directly,
+    bypassing threshold logic entirely — split out from compute_metrics()
+    so naive baselines (always_normal / always_anomaly / random_prior)
+    can call it directly without "faking" the original function with a
+    dummy score/threshold pair (e.g. score=0, threshold=0.5), which risks
+    the same kind of two-code-path desync bug seen before in engine.py
+    (the silent MSE fallback).
+
+    If scores=None (no meaningful ranking-based score tied continuously
+    to pred — e.g. naive baselines where pred is a constant or random
+    value with no backing score), this returns auc=ap=NaN and
+    fpr=tpr=empty arrays, per the principle that ranking-based metrics
+    are meaningless for a fixed/random decision rule (AUC/AP measure the
+    ranking quality of a continuous score, not the quality of a single
+    0/1 prediction).
     """
-    pred = (scores >= threshold).astype(int)
-    gt   = y_true
-    fpr, tpr, _ = roc_curve(gt, scores)
-    auc = roc_auc_score(gt, scores) if len(np.unique(gt)) == 2 else float('nan')
-    ap  = average_precision_score(gt, scores) if len(np.unique(gt)) == 2 else float('nan')
+    if scores is not None:
+        fpr, tpr, _ = roc_curve(gt, scores)
+        auc = roc_auc_score(gt, scores) if len(np.unique(gt)) == 2 else float('nan')
+        ap  = average_precision_score(gt, scores) if len(np.unique(gt)) == 2 else float('nan')
+    else:
+        # ไม่มี score ต่อเนื่อง (naive baseline) — ranking metric ไม่มี
+        # นิยาม บังคับ NaN ตรงๆ ไม่เดา ไม่คำนวณ roc_curve() ทิ้งเปล่าๆ
+        #
+        # No continuous score (naive baseline) — ranking metrics are
+        # undefined. Force NaN directly; don't guess, and don't waste a
+        # roc_curve() call for nothing.
+        fpr, tpr = np.array([]), np.array([])
+        auc = float('nan')
+        ap  = float('nan')
 
     cm = confusion_matrix(gt, pred, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
@@ -77,6 +105,98 @@ def compute_metrics(scores: np.ndarray, y_true: np.ndarray, threshold: float) ->
         fpr=fpr, tpr=tpr,
         gt=gt, pred=pred, scores=scores,
     )
+
+
+def compute_metrics(scores: np.ndarray, y_true: np.ndarray, threshold: float) -> Dict:
+    """คำนวณ metric ครบชุดจาก score/label/threshold ที่ให้มา — คืน dict เดียว
+    รวมทั้ง classification metrics มาตรฐาน (AUC, AP, accuracy, precision,
+    recall, F1) และ metric เชิงปฏิบัติงานจริง (auto-clear rate, escape
+    rate, residual false-clear rate) ที่สื่อความหมายกับผู้ใช้งานจริงมากกว่า
+    (เช่น ใน context QC/inspection line)
+
+    เป็น wrapper บาง ๆ รอบ compute_metrics_from_predictions(): แปลง score
+    ต่อเนื่องเป็น prediction 0/1 ด้วย threshold ก่อน แล้วส่งต่อให้ core
+    function คำนวณ — ตัวโค้ดคำนวณจริงอยู่ที่เดียว ไม่มี logic ซ้ำซ้อน
+
+    Compute the full metric set from the given scores/labels/threshold —
+    returns a single dict with both standard classification metrics (AUC,
+    AP, accuracy, precision, recall, F1) and operationally meaningful
+    metrics (auto-clear rate, escape rate, residual false-clear rate) that
+    are easier to reason about in a real QC/inspection-line context.
+
+    A thin wrapper around compute_metrics_from_predictions(): converts the
+    continuous score into a 0/1 prediction via the threshold, then hands
+    off to the core function — the actual computation lives in one place,
+    no duplicated logic.
+    """
+    pred = (scores >= threshold).astype(int)
+    return compute_metrics_from_predictions(y_true, pred, scores=scores)
+
+
+def compute_naive_baseline_metrics(y_true: np.ndarray, seed: int) -> Dict[str, Dict]:
+    """คำนวณ metric ของ naive baseline 3 แบบ สำหรับเทียบกับผลโมเดลจริง
+    (คำนวณเฉพาะบน val/test เท่านั้น — ห้ามเรียกกับ train split เพราะ
+    train ของ repo นี้มีแต่ภาพ normal โดยการออกแบบ ทุก field จะกลายเป็น
+    NaN/0 ที่ไม่มีความหมายไปหมด)
+
+    - always_normal  : ไม่ flag เลย (pred=0 ทุกภาพ) — จำลอง "ไม่ตรวจอะไรเลย ปล่อยผ่านหมด"
+    - always_anomaly : flag ทุกภาพ (pred=1 ทุกภาพ) — จำลอง "ตีว่าเสียหมดทุกชิ้น ให้คนตรวจซ้ำทุกใบ"
+    - random_prior   : สุ่ม pred=1 ด้วยความน่าจะเป็น = สัดส่วน anomaly จริงใน y_true ที่ส่งเข้ามา
+                        (stratified ตาม prior ของ split นั้นๆ)
+
+    ทั้ง 3 แบบเรียก compute_metrics_from_predictions(scores=None) เสมอ
+    → auc/ap เป็น NaN เสมอ ตามที่ตกลงไว้ (ranking metric ไม่มีความหมาย
+    กับ decision rule แบบคงที่/สุ่ม)
+
+    random_prior ใช้ np.random.RandomState(seed) แยกต่างหากของตัวเอง
+    ไม่แตะ global RNG ที่ set_seed(cfg.SEED) ตั้งไว้ตอนต้น pipeline —
+    ไม่กระทบ reproducibility ของการเทรน AE หรือของ split เดิมแต่อย่างใด
+
+    Compute metrics for 3 naive baselines to compare against the real
+    model's results (val/test only — never call this on the train split,
+    since this repo's train set is normal-only by design; every field
+    would collapse into a meaningless NaN/0).
+
+    - always_normal  : never flags (pred=0 for every image) — simulates "inspect nothing, pass everything"
+    - always_anomaly : flags every image (pred=1 for every image) — simulates "reject everything, re-inspect every unit by hand"
+    - random_prior   : predicts 1 with probability = the true anomaly proportion in the given y_true
+                        (stratified by that split's prior)
+
+    All three always call compute_metrics_from_predictions(scores=None)
+    → auc/ap are always NaN, per the earlier decision (ranking metrics
+    are meaningless for a fixed/random decision rule).
+
+    random_prior uses its own separate np.random.RandomState(seed) — it
+    does not touch the global RNG that set_seed(cfg.SEED) configured at
+    the start of the pipeline, so it has zero effect on AE training
+    reproducibility or on the existing data split.
+    """
+    n = len(y_true)
+
+    # แบบที่ 1: Always Normal — pred เป็น 0 ทุกตัว
+    # Baseline 1: Always Normal — pred is 0 for every sample
+    pred_always_normal = np.zeros(n, dtype=int)
+
+    # แบบที่ 2: Always Anomaly — pred เป็น 1 ทุกตัว
+    # Baseline 2: Always Anomaly — pred is 1 for every sample
+    pred_always_anomaly = np.ones(n, dtype=int)
+
+    # แบบที่ 3: Random / Prior-based — สุ่มตามสัดส่วน anomaly จริงของ split นี้
+    # ต้อง log seed ที่ใช้ไว้เสมอ (ผ่าน caller เป็นคนเก็บ) เพื่อให้ผลสุ่ม
+    # reproduce ซ้ำได้ข้าม run
+    #
+    # Baseline 3: Random / Prior-based — sample 1s at the true anomaly
+    # rate for this split. The seed used must always be logged by the
+    # caller so the random result reproduces exactly across runs.
+    prior = float(np.mean(y_true))
+    rng = np.random.RandomState(seed)
+    pred_random = (rng.random_sample(n) < prior).astype(int)
+
+    return {
+        'always_normal':  compute_metrics_from_predictions(y_true, pred_always_normal,  scores=None),
+        'always_anomaly': compute_metrics_from_predictions(y_true, pred_always_anomaly, scores=None),
+        'random_prior':   compute_metrics_from_predictions(y_true, pred_random,         scores=None),
+    }
 
 
 def select_percentile_threshold(val_scores: np.ndarray, val_y: np.ndarray, cfg) -> float:

@@ -49,8 +49,16 @@ from src.model.backbone_baseline import ConvNeXtExtractor
 from src.model.autoencoder import FeatureAutoencoder
 from src.engine import train_autoencoder, score_dataset_split, get_best_epoch, fit_structcore_stats
 from src.losses import get_criterion
-from src.evaluate import (compute_metrics, select_percentile_threshold,
-                          oracle_threshold_diagnostic)
+# เพิ่ม compute_naive_baseline_metrics เข้ามาคู่กับ compute_metrics เดิม —
+# ใช้คำนวณ baseline อ้างอิง (always_normal / always_anomaly / random_prior)
+# บน val/test เทียบกับผลโมเดลจริง
+#
+# Added compute_naive_baseline_metrics alongside the existing
+# compute_metrics — computes the reference baselines (always_normal /
+# always_anomaly / random_prior) on val/test to compare against the
+# real model's results.
+from src.evaluate import (compute_metrics, compute_naive_baseline_metrics,
+                          select_percentile_threshold, oracle_threshold_diagnostic)
 from src import io_utils
 
 console = Console()
@@ -66,6 +74,42 @@ def make_pred_df(paths, labels, scores, metrics):
         'correct': (metrics['gt'] == metrics['pred']).astype(int).tolist(),
     })
     return df
+
+
+def naive_baseline_metrics_to_serializable(m: dict) -> dict:
+    """แปลง dict metric ของ naive baseline หนึ่งตัวให้ serialize เป็น JSON ได้
+
+    ต่างจาก filter ที่ใช้กับ val_metrics/test_metrics ของโมเดลจริงใน
+    summary_dict['results'] ด้านล่าง 1 จุดสำคัญ: **ไม่กรอง NaN ทิ้ง**
+    เพราะเป้าหมายของ naive baseline คือให้เห็นชัดเจนว่า metric ไหน
+    "คำนวณไม่ได้โดยธรรมชาติ" (เช่น auc/ap ของ fixed/random decision
+    rule) ไม่ใช่ปิดบังมันด้วยการไม่เขียน key นั้นลง JSON เลย
+
+    Converts one naive-baseline metric dict into something JSON can
+    serialize.
+
+    Differs from the filter used for the real model's val_metrics/
+    test_metrics in summary_dict['results'] below in one important way:
+    it does **not** drop NaN values. The whole point of the naive
+    baselines is to make it explicit which metrics are "undefined by
+    construction" (e.g. auc/ap for a fixed/random decision rule) —
+    silently omitting the key from the JSON would hide that instead of
+    showing it.
+    """
+    return {
+        k: (float(v) if isinstance(v, float) else v)
+        for k, v in m.items()
+        # เก็บทั้ง float (auc=NaN รวมอยู่ในนี้ด้วยโดยตั้งใจ) และ int
+        # (tt/tf/ft/ff) กัน array ทิ้ง (cm, gt, pred, fpr, tpr, scores)
+        # เหมือนกับ filter เดิมของ results — ต่างกันแค่ไม่เช็ค np.isnan()
+        #
+        # Keep both float values (auc=NaN is included here on purpose)
+        # and int values (tt/tf/ft/ff); arrays (cm, gt, pred, fpr, tpr,
+        # scores) are excluded, same as the existing results filter —
+        # the only difference is there's no np.isnan() check.
+        if isinstance(v, float)
+        or (isinstance(v, int) and not isinstance(v, bool))
+    }
 
 
 def main(cfg: Config = None):
@@ -262,6 +306,31 @@ def main(cfg: Config = None):
     val_metrics   = compute_metrics(val_scores,   val_y,   threshold)
     test_metrics  = compute_metrics(test_scores,  test_y,  threshold)
 
+    # ── Naive baselines (always_normal / always_anomaly / random_prior) ────
+    # คำนวณเฉพาะบน val/test เท่านั้น (ตรงกับ methodology ของโมเดลจริงที่
+    # val_metrics/test_metrics ก็คำนวณบน val/test เท่านั้นเช่นกัน) —
+    # ไม่คำนวณบน train เพราะ train มีแต่ normal โดยการออกแบบ ทุก field
+    # จะกลายเป็น NaN/ไม่มีความหมายไปหมด ไม่ได้เพิ่มข้อมูลอะไร
+    #
+    # ใช้ CFG.SEED เดียวกับที่ set_seed() ตั้งไว้ตอนต้น pipeline สำหรับ
+    # random_prior — log ไว้ใน final_results.json ด้วยเพื่อให้ reproduce
+    # ผลสุ่มซ้ำได้ข้าม run
+    #
+    # Naive baselines (always_normal / always_anomaly / random_prior).
+    # Computed on val/test only (matching the real model's methodology,
+    # since val_metrics/test_metrics are also val/test-only) — not
+    # computed on train, since train is normal-only by design and every
+    # field would collapse into a meaningless NaN/0, adding no
+    # information.
+    #
+    # Uses the same CFG.SEED that set_seed() configured at the start of
+    # the pipeline for random_prior — also logged into
+    # final_results.json so the random result can be reproduced exactly
+    # across runs.
+    print('=== Computing naive baselines (val/test) ===')
+    naive_val  = compute_naive_baseline_metrics(val_y,  seed=CFG.SEED)
+    naive_test = compute_naive_baseline_metrics(test_y, seed=CFG.SEED)
+
     table = Table(title=f'ConvNeXt-{CFG.BACKBONE.capitalize()} Autoencoder — Results',
                   show_header=True, header_style='bold magenta')
     table.add_column('Split',     style='bold')
@@ -329,6 +398,29 @@ def main(cfg: Config = None):
         # own final_results.json, without needing to separately track down
         # which config.py values were in effect when each one was run.
         'config': io_utils.config_to_serializable_dict(CFG),
+        # naive_baselines: baseline อ้างอิง 3 แบบ (always_normal /
+        # always_anomaly / random_prior) คำนวณบน val/test — แยกเป็น
+        # top-level key ของตัวเอง ไม่ปนกับ 'results' ด้านล่าง (ที่เป็นผล
+        # ของโมเดลจริง) เพื่อกัน compare_experiments.py หรือ parser อื่น
+        # ที่อ่าน field จาก 'results' ตรงๆ พังหรือเก็บค่าผิดประเภทโดยไม่
+        # ตั้งใจ — seed เก็บไว้ระดับเดียวเพราะ val/test ใช้ CFG.SEED
+        # เดียวกัน ไม่ต้อง log ซ้ำสองที่
+        #
+        # naive_baselines: 3 reference baselines (always_normal /
+        # always_anomaly / random_prior) computed on val/test — kept as
+        # its own top-level key, not mixed into 'results' below (which
+        # holds the real model's results), so compare_experiments.py or
+        # any other parser reading fields straight from 'results' doesn't
+        # break or pick up the wrong value type by accident. seed is
+        # logged once at this level since val/test share the same
+        # CFG.SEED — no need to duplicate it per split.
+        'naive_baselines': {
+            'seed': CFG.SEED,
+            'val':  {name: naive_baseline_metrics_to_serializable(m)
+                     for name, m in naive_val.items()},
+            'test': {name: naive_baseline_metrics_to_serializable(m)
+                     for name, m in naive_test.items()},
+        },
         'results': {
             split: {
                 k: (float(v) if isinstance(v, float) else v)
