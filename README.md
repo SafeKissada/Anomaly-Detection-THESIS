@@ -46,7 +46,8 @@
 │   └── config.py               # dataclass Config รวมทุก hyperparameter + validation ใน __post_init__
 ├── scripts/
 │   ├── train.py                 # เทรน autoencoder → คำนวณ score val/test → เซฟ artifact ทั้งหมด
-│   └── visualize.py             # โหลด artifact ที่เซฟไว้ → render กราฟ/heatmap/gallery ทั้งหมด
+│   ├── visualize.py             # โหลด artifact ที่เซฟไว้ → render กราฟ/heatmap/gallery ทั้งหมด
+│   └── run_cost_aware.py         # cost-aware threshold sweep — รันแยกจาก train.py ใช้ artifact เดิม
 ├── src/
 │   ├── data/
 │   │   └── dataset.py            # สแกน/แบ่ง dataset, transform ตามโหมดสี, สร้าง Dataset/DataLoader
@@ -57,6 +58,7 @@
 │   ├── losses.py                 # MSE / MAE / Huber / Cosine / Cosine+MSE loss + get_criterion()
 │   ├── optimes.py                # optimizer factory (Adam / AdamW / SGD / RMSprop) ตาม cfg.OPTIM
 │   ├── evaluate.py               # metrics, percentile threshold, oracle threshold diagnostic
+│   ├── cost_aware.py             # cost-aware threshold selection (r·FN + FP) — ทางเลือกแทน percentile/F1 threshold
 │   ├── io_utils.py               # save/load history, scores, checkpoint, norm stats, threshold
 │   └── visual.py                 # ฟังก์ชัน plot/heatmap/gallery ทั้งหมด
 └── requirements.txt
@@ -158,6 +160,40 @@ criterion ตัวเดียวกันถูกใช้ทั้งตอ�
 
 **`Config` dataclass default vs. ค่าที่ใช้จริงใน `RUN.py`**: `config/config.py` ตั้ง `AE_MONITOR = 'val_auroc'` เป็น dataclass default (เลือกผลลัพธ์การแยกแยะที่ดีที่สุด) แต่ `RUN.py` (entry point หลักที่แนะนำให้ใช้) override เป็น `AE_MONITOR = 'val_loss'` แทน เพื่อให้การเลือก checkpoint ระหว่างเทรนเป็น **unsupervised อย่างเคร่งครัด** — `val_loss` ต่ำ ไม่ได้แปลว่าโมเดลดีเสมอไป (AE ที่ reconstruct แม่นมากจนรวมถึง anomaly ด้วยจะทำให้ error ของ normal/anomaly แยกกันไม่ออก ซึ่งกลับทำให้ AUROC แย่ลง) แต่เป็น trade-off ที่ตั้งใจเลือก: **unsupervised อย่างเคร่งครัด** (`val_loss`) แลกกับ **ผลลัพธ์การแยกแยะที่ดีที่สุด** (`val_auroc`) — ปรับกลับไปใช้ `val_auroc` ได้จาก `RUN.py` ถ้าต้องการเปรียบเทียบทั้งสองแบบเป็น ablation
 
+### Cost-Aware Threshold Selection (`src/cost_aware.py`)
+
+**สถานะ**: candidate novelty มุมที่ 2 (อีกตัวคือ Leave-One-Group-Out) — ยังไม่ได้ล็อกว่าเป็น novelty หลัก และยังไม่เคยรันกับข้อมูลจริง
+
+Threshold แบบ percentile เดิม (`select_percentile_threshold`) ไม่สนใจว่า defect จริงจะหลุดไปกี่ชิ้น — AUC สูงไม่ได้แปลว่า threshold ที่เลือกใช้จริงจะดี เพราะ AUC วัดคุณภาพ ranking ของ score ทั้งหมด ไม่ขึ้นกับ threshold ตัวใดตัวหนึ่ง F1-based threshold ก็มีปัญหาเดียวกันเชิงโครงสร้าง เพราะถ่วงน้ำหนัก FP/FN เท่ากันเป๊ะ ทั้งที่ในบริบท QC จริง **FN (escape) แพงกว่า FP (false alarm) มาก**
+
+`src/cost_aware.py` เลือก threshold จาก total cost แทน:
+
+```
+Total Cost(t, r) = r · FN(t) + 1 · FP(t)
+t*(r) = argmin_t [ r·FN(t) + FP(t) ]
+```
+
+`r` คือ cost ratio (escape 1 ชิ้นแพงเท่ากับ false-check กี่ครั้ง) ใช้ parametric ratio แทนตัวเลขต้นทุนจริง (บาท/นาที) เพราะไม่มีข้อมูลต้นทุนจริงให้ใช้ — generalize ข้ามบริบท deployment ได้ ไม่ผูกกับ cost structure ของโรงงานเดียว
+
+รันแยกจาก `train.py` โดยสิ้นเชิง ใช้ artifact ที่มีอยู่แล้ว (`scores_val.npz`, `scores_test.npz`) ไม่ต้อง train ใหม่:
+
+```bash
+python scripts/train.py          # ทำครั้งเดียว ได้ artifact ครบ
+python scripts/run_cost_aware.py # รันกี่ครั้งก็ได้ ไม่ต้อง train ซ้ำ
+```
+
+**ไม่มี `r` ที่ "ถูกต้อง" ตายตัว** — framework นี้ให้เครื่องมือเลือก ไม่ใช่ตัวเลขสำเร็จรูป มี 3 แนวทาง:
+
+| แนวทาง | ฟังก์ชัน | เมื่อไหร่ควรใช้ |
+|---|---|---|
+| แสดงทั้ง curve ไม่เลือก | `cost_sweep_report()` | Framework paper — ให้ผู้อ่าน/โรงงานเลือกเองจาก cost ratio จริง |
+| Elbow point (ตัวอย่างประกอบเท่านั้น) | `find_elbow_r()` | ต้องมีตัวเลขตัวแทนสักตัวในเล่ม — ต้องระบุชัดว่าเป็นตัวอย่าง ไม่ใช่ deployment number |
+| Recall-constrained | `select_recall_constrained_threshold()` | มี business spec อยู่แล้ว (เช่น "escape ต้อง ≤5%") ไม่ต้องรู้ cost เป็นเงินเลย |
+
+**Known limitations**:
+- Candidate ของ `sweep_thresholds()`/`select_recall_constrained_threshold()` ไม่รวม threshold ที่ "ไม่ flag เลย" (เหมือน `oracle_threshold_diagnostic()` เดิมที่ตัด endpoint สุดท้ายทิ้ง) — ในทางปฏิบัติแทบไม่กระทบเพราะ `r` ที่ใช้จริง (1–100) มักให้ threshold ต่ำอยู่แล้ว
+- ที่ `r=1`, minimize `FN+FP` เทียบเท่า maximize accuracy **ไม่ใช่** maximize F1 — ตรงกันแค่ตอน class balance เท่านั้น **ห้ามใช้ "r=1 ต้องใกล้ max-F1 threshold" เป็น correctness check** (พิสูจน์แล้วด้วย simulation ว่าต่างกันได้โดยไม่มีบั๊ก) ใช้ monotonicity check แทน: `r` เพิ่ม → threshold ไม่เพิ่ม → escape_rate ไม่เพิ่ม
+
 ### Output
 
 Artifact ถูกเขียนไว้ใต้ `Config.SAVE_PATH` (checkpoint/log) และ `Config.OUTPUT_PATH` (ผลลัพธ์) ได้แก่:
@@ -216,7 +252,8 @@ A concise summary usable directly in a thesis: *"This system uses a semi-supervi
 │   └── config.py               # Dataclass Config with every hyperparameter + validation in __post_init__
 ├── scripts/
 │   ├── train.py                 # Train autoencoder → score val/test → save all artifacts
-│   └── visualize.py             # Load saved artifacts → render all plots/heatmaps/galleries
+│   ├── visualize.py             # Load saved artifacts → render all plots/heatmaps/galleries
+│   └── run_cost_aware.py         # Cost-aware threshold sweep — runs separately from train.py, reuses artifacts
 ├── src/
 │   ├── data/
 │   │   └── dataset.py            # Dataset scan/split, color-mode transforms, Dataset/DataLoader builders
@@ -227,6 +264,7 @@ A concise summary usable directly in a thesis: *"This system uses a semi-supervi
 │   ├── losses.py                 # MSE / MAE / Huber / Cosine / Cosine+MSE loss + get_criterion()
 │   ├── optimes.py                # Optimizer factory (Adam / AdamW / SGD / RMSprop) driven by cfg.OPTIM
 │   ├── evaluate.py               # Metrics, percentile threshold, oracle threshold diagnostic
+│   ├── cost_aware.py             # Cost-aware threshold selection (r·FN + FP) — an alternative to the percentile/F1 threshold
 │   ├── io_utils.py               # Save/load history, scores, checkpoints, norm stats, threshold
 │   └── visual.py                 # All plotting/heatmap/gallery functions
 └── requirements.txt
@@ -327,6 +365,40 @@ After every training epoch, `train_autoencoder()` (in `src/engine.py`) computes 
 2. **`get_best_epoch()`** in `src/engine.py` — a single shared function called by both `scripts/train.py` (to report the best epoch in `final_results.json`) and `src/visual.py` (to mark the best epoch on the training curve), guaranteeing the two agree exactly.
 
 **`Config` dataclass default vs. the value actually used by `RUN.py`**: `config/config.py` sets `AE_MONITOR = 'val_auroc'` as the dataclass default (best separability). `RUN.py` (the recommended entry point) overrides this to `AE_MONITOR = 'val_loss'`, so checkpoint selection during training is **strictly unsupervised**. A low `val_loss` doesn't necessarily mean a good model — an autoencoder that reconstructs everything accurately, anomalies included, drives its loss down while making normal and anomalous errors indistinguishable, which actually hurts AUROC. This is a deliberate trade-off: **strict unsupervised selection** (`val_loss`) traded for **best detection performance** (`val_auroc`) — switch back to `val_auroc` in `RUN.py` if you want to compare both as an ablation.
+
+### Cost-Aware Threshold Selection (`src/cost_aware.py`)
+
+**Status**: novelty candidate #2 (the other is Leave-One-Group-Out) — not yet locked as the main novelty, and not yet run against real data.
+
+The existing percentile threshold (`select_percentile_threshold`) ignores how many real defects would slip through — high AUC doesn't mean the threshold actually used in deployment is good, since AUC measures overall ranking quality, not any single threshold. F1-based thresholds have the same structural problem, weighting FP and FN exactly equally, even though in a real QC context **FN (escape) is far more costly than FP (false alarm)**.
+
+`src/cost_aware.py` selects the threshold by total cost instead:
+
+```
+Total Cost(t, r) = r · FN(t) + 1 · FP(t)
+t*(r) = argmin_t [ r·FN(t) + FP(t) ]
+```
+
+`r` is the cost ratio (one escape costs as much as how many false checks). A parametric ratio is used instead of real monetary costs, since no real cost data is available — this generalizes across deployment contexts instead of being tied to one factory's cost structure.
+
+Runs completely separately from `train.py`, reusing existing artifacts (`scores_val.npz`, `scores_test.npz`) — no re-training needed:
+
+```bash
+python scripts/train.py          # once, produces all artifacts
+python scripts/run_cost_aware.py # re-runnable any time, no re-training
+```
+
+**There is no single "correct" `r`** — this framework provides a tool for choosing, not a ready-made number. Three approaches:
+
+| Approach | Function | When to use |
+|---|---|---|
+| Show the whole curve, pick nothing | `cost_sweep_report()` | Framework paper — let the reader/factory choose from their own real cost ratio |
+| Elbow point (illustrative only) | `find_elbow_r()` | A single representative number is needed in the thesis — must be clearly labeled as an example, not a deployment number |
+| Recall-constrained | `select_recall_constrained_threshold()` | A business spec already exists (e.g. "escape must stay ≤5%") — no need to know cost in monetary terms at all |
+
+**Known limitations**:
+- Candidates in `sweep_thresholds()`/`select_recall_constrained_threshold()` never include the "flag nothing" threshold (same as the existing `oracle_threshold_diagnostic()`, which drops the last endpoint) — rarely matters in practice since the `r` values actually used (1–100) tend to push the threshold low anyway.
+- At `r=1`, minimizing `FN+FP` is equivalent to maximizing accuracy, **not** F1 — the two only coincide under class balance. **Never use "r=1 should match the max-F1 threshold" as a correctness check** (proven via simulation that they can legitimately differ with zero bugs). Use the monotonicity check instead: `r` increases → threshold non-increasing → escape_rate non-increasing.
 
 ### Outputs
 
