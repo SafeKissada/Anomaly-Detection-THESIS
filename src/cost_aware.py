@@ -115,31 +115,68 @@ def select_cost_optimal_threshold(val_scores: np.ndarray, val_y: np.ndarray,
 def cost_sweep_report(val_scores: np.ndarray, val_y: np.ndarray,
                        test_scores: np.ndarray, test_y: np.ndarray,
                        r_values: List[float]) -> List[Dict]:
-    """สำหรับแต่ละค่า r: หา threshold ที่ดีที่สุดบน val แล้วเอาไปวัดผลจริง
-    บน test — คืนเป็น list พร้อม metric เต็มชุด (ใช้ compute_metrics เดิม
-    จาก src/evaluate.py ตรงๆ ไม่เขียน metric ซ้ำ)
+    """สำหรับแต่ละค่า r: หา threshold ที่ดีที่สุดบน val แล้ววัดผลเต็มชุด
+    ทั้ง val และ test ด้วย threshold เดียวกัน — คืนเป็น list พร้อม metric
+    ครบทุกตัวของทั้งสอง split ในแถวเดียวกัน (prefix val_/test_) ให้เขียน
+    ลง CSV เดียวได้ตรงๆ ไม่ต้องแยกไฟล์
 
-    For each r: find the best threshold on val, then measure it for real
-    on test — returns a list with the full metric set (reuses
-    compute_metrics from src/evaluate.py directly, no duplicated metric
-    logic).
+    ทุก field ของ val_*/test_* มาจาก compute_metrics() ตัวเดียวกับที่
+    evaluate.py ใช้ทั้ง repo (reuse ไม่เขียน metric ซ้ำ) ใช้ naming
+    convention เดียวกันทั้งโปรเจกต์: tt/tf/ft/ff = (actual, predicted)
+    ตาม (anomaly,anomaly)/(anomaly,normal)/(normal,anomaly)/(normal,normal)
+    — เหมือนกับที่ใช้ใน naive_baselines และ results ของ final_results.json
+    ทุกประการ ไม่ใช่ fn/fp แบบที่เคยใช้ในเวอร์ชันก่อนหน้า (breaking change
+    จาก schema เดิม — ถ้ามี cost_aware_sweep.csv เก่าอยู่ ต้องรันใหม่)
+
+    val_cost คือค่าที่ใช้ตัดสินใจเลือก threshold จริง (r·FN + FP ณ
+    threshold ที่เลือก) แยกต่างหากจาก metric อื่นเพราะเป็นค่าเฉพาะของ
+    cost-aware framework ไม่ได้มาจาก compute_metrics()
+
+    auc/ap ของ val_*/test_* จะเหมือนกันทุกแถว (ไม่ขึ้นกับ threshold ที่
+    ต่างกัน เพราะเป็น ranking-based metric) แต่ยังคงไว้ในทุกแถวเพื่อให้
+    CSV มีทุกค่าครบในตัวเอง ไม่ต้องเปิดไฟล์อื่นมาเทียบ
+
+    For each r: find the best threshold on val, then measure the full
+    metric set on BOTH val and test using that same threshold — returns
+    a list with every metric from both splits in the same row
+    (val_/test_ prefixed), ready to write straight to a single CSV, no
+    need for separate files.
+
+    Every val_*/test_* field comes from the same compute_metrics() used
+    throughout evaluate.py (reused, not duplicated), using the same
+    naming convention as the rest of the project: tt/tf/ft/ff =
+    (actual, predicted) — identical to what naive_baselines and
+    final_results.json's results use. NOT fn/fp as in the previous
+    version (breaking change from the old schema — re-run if you have
+    an old cost_aware_sweep.csv).
+
+    val_cost is the value actually used to pick the threshold (r·FN + FP
+    at the chosen threshold), kept separate from the other metrics since
+    it's specific to the cost-aware framework, not from compute_metrics().
+
+    val_*/test_* auc/ap will be identical across every row (they don't
+    depend on the threshold, being ranking-based metrics), but are kept
+    in every row so the CSV is self-contained without needing to open
+    another file to cross-reference.
     """
+    metric_fields = ['auc', 'ap', 'acc', 'precision', 'recall', 'f1',
+                     'tt', 'tf', 'ft', 'ff',
+                     'auto_clear_rate', 'escape_rate', 'residual_fcr']
+
     report = []
     for r in r_values:
         best = select_cost_optimal_threshold(val_scores, val_y, r)
         t_star = best['threshold']
+
+        val_metrics  = compute_metrics(val_scores,  val_y,  t_star)
         test_metrics = compute_metrics(test_scores, test_y, t_star)
-        report.append(dict(
-            r=r,
-            threshold=t_star,
-            val_cost=best['total_cost'],
-            val_fn=best['fn'], val_fp=best['fp'],
-            test_escape_rate=test_metrics['escape_rate'],
-            test_precision=test_metrics['precision'],
-            test_recall=test_metrics['recall'],
-            test_f1=test_metrics['f1'],
-            test_auto_clear_rate=test_metrics['auto_clear_rate'],
-        ))
+
+        row = dict(r=r, threshold=t_star, val_cost=best['total_cost'])
+        for field in metric_fields:
+            row[f'val_{field}']  = val_metrics[field]
+            row[f'test_{field}'] = test_metrics[field]
+        report.append(row)
+
     return report
 
 
@@ -152,7 +189,8 @@ def find_elbow_r(report: List[Dict]) -> Dict:
     วิธี: max-distance-from-chord (เส้นตรงที่ลากจากจุดแรกไปจุดสุดท้าย
     ของ curve) — จุดที่ห่างจากเส้นตรงนี้มากที่สุดคือจุดที่โค้งงอมากที่สุด
     เป็นวิธีมาตรฐานสำหรับหา knee/elbow point (เทียบเท่าหลักการเดียวกับ
-    Kneedle algorithm แบบย่อ) ใช้ **val_fn/val_fp เท่านั้น** (ไม่ใช้
+    Kneedle algorithm แบบย่อ) ใช้ **val_tf (escape) / val_ft (false
+    alarm) เท่านั้น** (ไม่ใช้
     test) เพราะการตัดสินใจ (เลือก r ตัวแทน) ต้องทำบน val — เหมือนหลักการ
     เดียวกับ select_cost_optimal_threshold ที่ห้ามใช้ Test ตัดสินใจ
 
@@ -173,7 +211,8 @@ def find_elbow_r(report: List[Dict]) -> Dict:
     first point to its last point) — the point farthest from this line
     is where the curve bends the most. This is a standard way to find a
     knee/elbow point (equivalent in spirit to a simplified Kneedle
-    algorithm). Uses **val_fn/val_fp only** (never test), since this
+    algorithm). Uses **val_tf (escape/FN) / val_ft (false alarm/FP) only**
+    (never test), since this
     decision (picking a representative r) must be made on val — same
     principle as select_cost_optimal_threshold, which never uses Test to
     decide.
@@ -190,8 +229,8 @@ def find_elbow_r(report: List[Dict]) -> Dict:
         raise ValueError('ต้องมีอย่างน้อย 3 ค่า r ถึงจะหา elbow ได้อย่างมีความหมาย '
                          '/ need at least 3 r values for a meaningful elbow')
 
-    fn = np.array([row['val_fn'] for row in report], dtype=float)
-    fp = np.array([row['val_fp'] for row in report], dtype=float)
+    fn = np.array([row['val_tf'] for row in report], dtype=float)
+    fp = np.array([row['val_ft'] for row in report], dtype=float)
 
     def _normalize(a: np.ndarray) -> np.ndarray:
         span = a.max() - a.min()

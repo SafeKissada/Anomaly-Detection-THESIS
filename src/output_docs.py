@@ -496,22 +496,47 @@ fpr/tpr point directly without sweeping yourself.
 
 *(ไฟล์นี้มีเพราะเคยรัน `scripts/run_cost_aware.py` มาก่อน — ไม่ใช่ output ปกติของ `train.py`)*
 
-**เก็บอะไร**: ผล cost-aware threshold sweep 1 แถวต่อ 1 ค่า `r` —
-`r`, `threshold`, `val_cost`, `val_fn`, `val_fp`, `test_escape_rate`,
-`test_precision`, `test_recall`, `test_f1`, `test_auto_clear_rate`
+**เก็บอะไร**: ผล cost-aware threshold sweep 1 แถวต่อ 1 ค่า `r` — **metric
+เต็มชุดทั้ง val และ test ในแถวเดียวกัน** (29 columns):
 
-**เอาไปทำอะไรได้**: plot cost-sensitivity curve (escape_rate vs r),
-เลือก threshold ผ่าน `find_elbow_r()`/`select_recall_constrained_threshold()`
-ใน `src/cost_aware.py`
+| Column | ความหมาย |
+|---|---|
+| `r` | cost ratio ที่ใช้ในรอบนั้น |
+| `threshold` | threshold ที่เลือกจาก val (cost ต่ำสุด ณ ค่า `r` นี้) |
+| `val_cost` | total cost (`r·FN + FP`) ณ threshold ที่เลือก — ค่าที่ใช้ตัดสินใจจริง |
+| `val_*` / `test_*` | metric เต็มชุดจาก `compute_metrics()` เดียวกับที่ใช้ทั้ง repo — `auc`, `ap`, `acc`, `precision`, `recall`, `f1`, `tt`, `tf`, `ft`, `ff`, `auto_clear_rate`, `escape_rate`, `residual_fcr` (× 2 split) |
+
+⚠️ **`tt`/`tf`/`ft`/`ff` = (actual, predicted)** ตาม convention เดียวกับ
+`naive_baselines`/`results` ใน `final_results.json` (`tt`=TP, `tf`=FN/escape,
+`ft`=FP, `ff`=TN) — **ไม่ใช่ `fn`/`fp` แบบ schema เก่า** ถ้ามีไฟล์เก่าที่
+เซฟไว้ก่อนหน้าอยู่ ต้องรัน `run_cost_aware.py` ใหม่เพื่ออัปเดต schema
+
+**เอาไปทำอะไรได้**:
+- ไม่ต้อง back-calculate ตัวเลขนับจาก rate อีกต่อไป — `tt`/`tf`/`ft`/`ff` มาให้ตรงๆ ทั้ง val/test ทุกแถว
+- Plot cost-sensitivity curve (escape_rate vs r) ได้ทั้ง val และ test ในกราฟเดียว
+- เทียบ val กับ test ในแถวเดียวกันได้ทันที (เช่น เช็คว่า threshold ที่เลือกจาก val generalize ไป test ดีแค่ไหน)
+- เลือก threshold ผ่าน `find_elbow_r()`/`select_recall_constrained_threshold()` ใน `src/cost_aware.py`
 
 *(This file exists because `scripts/run_cost_aware.py` was run before —
 not part of `train.py`'s normal output.)*
 
 **What it holds**: cost-aware threshold sweep results, one row per `r`
-value.
+value — **the full metric set for both val and test in the same row**
+(29 columns). See table above.
 
-**What you can do with it**: plot the cost-sensitivity curve, pick a
-threshold via `find_elbow_r()`/`select_recall_constrained_threshold()`.
+⚠️ **`tt`/`tf`/`ft`/`ff` = (actual, predicted)**, same convention as
+`naive_baselines`/`results` in `final_results.json` (`tt`=TP, `tf`=FN/
+escape, `ft`=FP, `ff`=TN) — **not `fn`/`fp` as in the old schema**. If
+an older file exists, re-run `run_cost_aware.py` to get the updated
+schema.
+
+**What you can do with it**: no more back-calculating counts from rates
+— `tt`/`tf`/`ft`/`ff` are given directly for both val/test on every row;
+plot the cost-sensitivity curve (escape_rate vs r) for both splits on
+one chart; compare val vs test in the same row (e.g. check how well the
+val-selected threshold generalizes to test); pick a threshold via
+`find_elbow_r()`/`select_recall_constrained_threshold()` in
+`src/cost_aware.py`.
 
 ---
 """)
