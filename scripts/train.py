@@ -60,6 +60,7 @@ from src.losses import get_criterion
 from src.evaluate import (compute_metrics, compute_naive_baseline_metrics,
                           select_percentile_threshold, oracle_threshold_diagnostic)
 from src import io_utils
+from src import output_docs
 
 console = Console()
 
@@ -364,9 +365,9 @@ def main(cfg: Config = None):
     print(f'AE weights saved → {ae_final_path}')
 
     make_pred_df(val_paths,   val_labels,   val_scores,   val_metrics).to_csv(
-        f'{CFG.OUTPUT_PATH}/predictions_val.csv',   index=False)
+        f'{CFG.SAVE_PATH}/predictions_val.csv',   index=False)
     make_pred_df(test_paths,  test_labels,  test_scores,  test_metrics).to_csv(
-        f'{CFG.OUTPUT_PATH}/predictions_test.csv',  index=False)
+        f'{CFG.SAVE_PATH}/predictions_test.csv',  index=False)
     
     best_ep = get_best_epoch(history, CFG.AE_MONITOR)
 
@@ -444,7 +445,7 @@ def main(cfg: Config = None):
         },
         'timestamp': datetime.now().isoformat()
     }
-    with open(f'{CFG.OUTPUT_PATH}/final_results.json','w') as f:
+    with open(f'{CFG.SAVE_PATH}/final_results.json','w') as f:
         json.dump(summary_dict, f, indent=2)
 
     lines = [
@@ -476,9 +477,20 @@ def main(cfg: Config = None):
     console.print(Panel('\n'.join(lines),
                   title='[bold green]✓ Experiment Complete[/bold green]', padding=(1,2)))
 
-    print('\nAll output files:')
-    for p in sorted(Path(CFG.OUTPUT_PATH).glob('*')):
+    print('\nAll output files (SAVE_PATH — numeric/log artifacts only, no images):')
+    for p in sorted(Path(CFG.SAVE_PATH).glob('*')):
         print(f'  {p.name}  ({p.stat().st_size/1024:.1f} KB)')
+
+    # เขียน README.md อธิบายไฟล์ทุกตัวใน SAVE_PATH แบบ dynamic (เช็คไฟล์
+    # ที่มีอยู่จริง ณ ตอนนี้เท่านั้น) — ไม่แตะ OUTPUT_PATH เลย เพราะ
+    # train.py ไม่เคยเขียนภาพอะไรลงนั้น (ภาพทั้งหมดมาจาก visualize.py)
+    #
+    # Writes a README.md documenting every file in SAVE_PATH dynamically
+    # (only files that exist right now) — never touches OUTPUT_PATH,
+    # since train.py never writes any image there (all images come from
+    # visualize.py).
+    readme_path = output_docs.write_save_path_readme(CFG)
+    print(f'\nWrote documentation -> {readme_path}')
 
     logger.info('Training pipeline finished. Run scripts/visualize.py to render plots.')
 

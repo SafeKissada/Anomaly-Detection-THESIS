@@ -52,6 +52,6 @@ report = cost_sweep_report(val_scores, val_y, test_scores, test_y, r_values)
 df = pd.DataFrame(report)
 print(df.to_string(index=False))
 
-output_csv = Path(CFG.OUTPUT_PATH) / 'cost_aware_sweep.csv'
+output_csv = Path(CFG.SAVE_PATH) / 'cost_aware_sweep.csv'
 df.to_csv(output_csv, index=False)
 print(f'\nSaved -> {output_csv}')

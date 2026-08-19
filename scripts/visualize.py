@@ -25,12 +25,14 @@ logger = logging.getLogger('ConvNeXtAutoencoder')
 
 import pandas as pd
 import torch
+from sklearn.metrics import roc_curve
 from rich.console import Console
 from rich.panel import Panel
 
 from config.config import Config
 from src.evaluate import compute_metrics
 from src import io_utils
+from src import output_docs
 from src.visual import (plot_class_distribution, plot_training_history,
                            plot_roc_curves, plot_pr_curves,
                            plot_confusion_matrices, plot_score_distributions,
@@ -75,6 +77,38 @@ def main():
     # ── คำนวณ metric จาก score ที่เซฟไว้ (ไม่มีการรัน inference โมเดลใหม่เลย) ─
     metrics = {split: compute_metrics(d['scores'], d['y_true'], threshold)
                for split, d in data.items()}
+
+    # ── ROC curve raw data → CSV แยก val/test (ตัวเลข → SAVE_PATH ไม่ใช่
+    # OUTPUT_PATH เพื่อให้ตรง convention เดียวกับไฟล์อื่น) ───────────────
+    # fpr/tpr/thresholds มาจาก sklearn.roc_curve() ตัวเดียวกับที่
+    # plot_roc_curves() ใช้วาดกราฟ — เซฟจุดดิบไว้ให้เอาไปใช้ต่อได้โดยไม่
+    # ต้องเปิด Python (เช่น เปิดใน Excel) หรือใช้เป็น input ของสคริปต์
+    # multi-seed ROC aggregation ในอนาคต (vertical averaging ต้องใช้
+    # fpr/tpr ดิบของแต่ละ seed ก่อน interpolate)
+    #
+    # Raw ROC curve data → separate CSV per val/test (numeric → SAVE_PATH,
+    # not OUTPUT_PATH, matching the convention used for every other file).
+    # fpr/tpr/thresholds come from the same sklearn.roc_curve() call that
+    # plot_roc_curves() uses to draw the graph — the raw points are saved
+    # so they can be used without opening Python (e.g. in Excel), or fed
+    # into a future multi-seed ROC aggregation script (vertical averaging
+    # needs each seed's raw fpr/tpr before interpolating).
+    for split, m in metrics.items():
+        fpr, tpr, roc_thresholds = roc_curve(data[split]['y_true'], data[split]['scores'])
+        roc_df = pd.DataFrame({
+            'fpr'      : fpr,
+            'tpr'      : tpr,
+            # roc_curve() คืน thresholds ยาวเท่า fpr/tpr เสมอ (จุดตัดที่
+            # ทำให้ได้ fpr/tpr คู่นั้น) — เก็บไว้ด้วยเผื่อต้องย้อนกลับไป
+            # หา threshold ที่จุดใดจุดหนึ่งบนเส้น
+            # roc_curve() always returns thresholds with the same length
+            # as fpr/tpr (the cut points that produce that fpr/tpr pair)
+            # — kept in case you need to trace back to the threshold at
+            # any specific point on the curve.
+            'threshold': roc_thresholds,
+        })
+        roc_df.to_csv(f'{CFG.SAVE_PATH}/roc_curve_data_{split}.csv', index=False)
+    print('ROC curve raw data (fpr/tpr/threshold) saved as CSV → SAVE_PATH.')
 
     # ── EDA: class distribution per split / สัดส่วน class ต่อ split ──────────
     plot_class_distribution({
@@ -134,7 +168,13 @@ def main():
             })
 
     df_gallery = pd.DataFrame(_rows)
-    df_gallery.to_csv(f'{CFG.OUTPUT_PATH}/gallery_index.csv', index=False)
+    # gallery_index.csv เป็นตัวเลข/tabular (ไม่ใช่ภาพ) จึงเก็บที่ SAVE_PATH
+    # แทน OUTPUT_PATH — OUTPUT_PATH หลังจากนี้จะมีแต่ไฟล์ .png เท่านั้น
+    #
+    # gallery_index.csv is numeric/tabular (not an image), so it's saved
+    # under SAVE_PATH instead of OUTPUT_PATH — from this point on,
+    # OUTPUT_PATH contains only .png files.
+    df_gallery.to_csv(f'{CFG.SAVE_PATH}/gallery_index.csv', index=False)
 
     print(f'df_gallery: {len(df_gallery):,} แถว '
           f"(val={len(data['val']['paths']):,}, "
@@ -170,6 +210,18 @@ def main():
             _ = gallery_preprocessed_overlay_images(
                 df_gallery, split_arrays, CFG,
                 split=split_name, n=20, ncols=5)
+
+    # เขียน README.md อธิบายไฟล์ภาพทุกตัวใน OUTPUT_PATH แบบ dynamic (เช็ค
+    # ไฟล์ที่มีอยู่จริง ณ ตอนนี้เท่านั้น) — ไม่แตะ SAVE_PATH เลย เพราะ
+    # visualize.py ไม่เคยเขียน checkpoint/metric/score ลงนั้น (มีแค่
+    # gallery_index.csv ที่ย้ายมาแล้วข้างบน)
+    #
+    # Writes a README.md documenting every image file in OUTPUT_PATH
+    # dynamically (only files that exist right now) — never touches
+    # SAVE_PATH, since visualize.py never writes checkpoints/metrics/
+    # scores there (except gallery_index.csv, already moved above).
+    readme_path = output_docs.write_output_path_readme(CFG)
+    print(f'\nWrote documentation -> {readme_path}')
 
     logger.info('All plots/heatmaps rendered.')
 
