@@ -8,7 +8,23 @@ import torch
 
 import scripts.train as train
 import scripts.visualize as visualize
+import scripts.run_cost_aware as run_cost_aware
 from config.config import Config
+from src import output_docs
+
+# เปิด/ปิดขั้นตอนที่ 3 (cost-aware threshold sweep) — ปิดได้ถ้าแค่อยาก
+# train+visualize เฉยๆ โดยไม่ต้องรัน sweep ทุกครั้ง (เช่น ตอนทำ ablation
+# ไล่หลาย config ที่ยังไม่สนใจ threshold sweep) ไม่กระทบ train/visualize
+# เลยไม่ว่าจะตั้งเป็นอะไร — เป็นขั้นตอนแยกที่อ่าน artifact ที่เซฟไว้แล้ว
+# เท่านั้น (ดู scripts/run_cost_aware.py)
+#
+# Toggle step 3 (cost-aware threshold sweep) on/off — turn it off if you
+# just want train+visualize without running the sweep every time (e.g.
+# during an ablation sweeping many configs where the threshold sweep
+# isn't relevant yet). Never affects train/visualize either way — it's a
+# separate step that only reads already-saved artifacts (see
+# scripts/run_cost_aware.py).
+RUN_COST_AWARE_ANALYSIS = True
 
 OVERRIDES = dict(
     # ── Data & paths / ข้อมูลและ path ──────────────────────────────────────
@@ -101,10 +117,39 @@ Config.__init__ = _patched_init
 
 if __name__ == "__main__":
 
-    print("\n--- [1/3] เริ่มทำงาน Train ---")
+    _n_steps = 3 if RUN_COST_AWARE_ANALYSIS else 2
+
+    print(f"\n--- [1/{_n_steps}] เริ่มทำงาน Train ---")
     train.main()
 
-    print("\n--- [2/3] เริ่มทำงาน Visualize ---")
+    print(f"\n--- [2/{_n_steps}] เริ่มทำงาน Visualize ---")
     visualize.main()
+
+    if RUN_COST_AWARE_ANALYSIS:
+        # อ่านจาก scores_val.npz/scores_test.npz ที่ train.main() เพิ่งเซฟ
+        # ไปหมาดๆ ด้านบน — ไม่ต้อง train/score ซ้ำเลย เร็วมาก (แค่ sweep
+        # threshold บน array ที่มีอยู่แล้ว)
+        #
+        # Reads scores_val.npz/scores_test.npz that train.main() just
+        # saved above — no re-training or re-scoring needed, very fast
+        # (just sweeping thresholds over arrays that already exist).
+        print(f"\n--- [3/{_n_steps}] เริ่มทำงาน Cost-Aware Threshold Sweep ---")
+        run_cost_aware.main()
+
+    # เรียกซ้ำอีกครั้งท้ายสุด (train.main() เรียกไปแล้วรอบหนึ่งตอนจบตัวเอง
+    # แต่ ณ ตอนนั้น visualize.main()/run_cost_aware.main() ยังไม่ทันสร้าง
+    # gallery_index.csv, roc_curve_data_{split}.csv, cost_aware_sweep.csv
+    # เข้า SAVE_PATH เลย — เรียกซ้ำตรงนี้เพื่อให้ README.md ครอบคลุมไฟล์
+    # ทั้งหมดที่มีอยู่จริง ณ ตอนจบ pipeline ทั้งหมด ไม่ใช่แค่ ณ ตอนจบ
+    # train.py เพียงอย่างเดียว — เขียนทับของเดิมเฉยๆ ไม่ error ถ้าเรียกซ้ำ
+    #
+    # Called again at the very end (train.main() already called this once
+    # at its own end, but at that point visualize.main()/
+    # run_cost_aware.main() hadn't yet created gallery_index.csv,
+    # roc_curve_data_{split}.csv, or cost_aware_sweep.csv in SAVE_PATH) —
+    # calling it again here makes README.md cover every file that
+    # actually exists at the end of the whole pipeline, not just at the
+    # end of train.py alone. Safe to call again; it just overwrites.
+    output_docs.write_save_path_readme(Config())
 
     print("\n✅ เสร็จสิ้นกระบวนการทั้งหมดเรียบร้อย!")
