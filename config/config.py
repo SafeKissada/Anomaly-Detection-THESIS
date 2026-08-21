@@ -132,7 +132,7 @@ class Config:
   # Stability epsilon for the diagonal Mahalanobis distance and λ_auto in
   # SCORE_METHOD='structcore' (guards against division by zero).
   STRUCTCORE_EPS        : float = 1e-8
-  AE_MONITOR            : str   = 'val_auroc'
+  AE_MONITOR            : str   = 'val_loss'
   USE_AUGMENTATION      : bool  = False
   AUG_COLOR_JITTER      : float = 0.20
 
